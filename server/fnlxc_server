@@ -1,0 +1,17 @@
+#!/bin/bash
+SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
+APP_ROOT="$(dirname "$SCRIPT_DIR")"
+cd "$SCRIPT_DIR" || exit 1
+if command -v python3 &>/dev/null; then
+    PYTHON_BIN=python3
+elif command -v python &>/dev/null; then
+    PYTHON_BIN=python
+else
+    echo "错误: 未找到 Python3" >&2
+    exit 1
+fi
+export TRIM_SERVICE_SOCKET="${TRIM_SERVICE_SOCKET:-${APP_ROOT}/fnlxc.sock}"
+export TRIM_APPDEST="${APP_ROOT}"
+export TRIM_PKGVAR="${TRIM_PKGVAR:-${APP_ROOT}/var}"
+export HOME="${HOME:-/var/lib/lxc}"
+exec ${PYTHON_BIN} ./fnlxc.py "$@"

@@ -1,0 +1,19 @@
+{
+  ".url": {
+    "lxcmanager.Application": {
+      "title": "LXC 容器管理",
+      "icon": "assets/ICON-{0}.PNG",
+      "type": "iframe",
+      "protocol": "http",
+      "gatewaySocket": "lxcmanager.sock",
+      "gatewayPrefix": "/app/lxcmanager",
+      "url": "/app/lxcmanager/",
+      "control": {
+        "fullUrlPerm": "editable",
+        "pathPerm": "hidden",
+        "accessPerm": "readonly"
+      },
+      "allUsers": false
+    }
+  }
+}

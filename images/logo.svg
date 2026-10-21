@@ -1,0 +1,32 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="256" height="256" viewBox="0 0 256 256">
+  <defs>
+    <linearGradient id="bg" x1="0%" y1="0%" x2="100%" y2="100%">
+      <stop offset="0%" style="stop-color:#2563eb"/>
+      <stop offset="100%" style="stop-color:#1d4ed8"/>
+    </linearGradient>
+  </defs>
+  
+  <!-- Background -->
+  <rect width="256" height="256" rx="40" fill="url(#bg)"/>
+  
+  <!-- Container Box -->
+  <rect x="48" y="60" width="160" height="140" rx="12" fill="white" fill-opacity="0.95"/>
+  
+  <!-- Container Header -->
+  <rect x="48" y="60" width="160" height="32" rx="12" fill="#1e293b"/>
+  <rect x="48" y="80" width="160" height="12" fill="#1e293b"/>
+  
+  <!-- Container Dots -->
+  <circle cx="72" cy="76" r="6" fill="#ef4444"/>
+  <circle cx="92" cy="76" r="6" fill="#f59e0b"/>
+  <circle cx="112" cy="76" r="6" fill="#22c55e"/>
+  
+  <!-- Container Content Lines -->
+  <rect x="64" y="108" width="80" height="8" rx="4" fill="#cbd5e1"/>
+  <rect x="64" y="124" width="120" height="8" rx="4" fill="#cbd5e1"/>
+  <rect x="64" y="140" width="100" height="8" rx="4" fill="#cbd5e1"/>
+  <rect x="64" y="156" width="60" height="8" rx="4" fill="#94a3b8"/>
+  
+  <!-- LXC Text -->
+  <text x="128" y="192" text-anchor="middle" font-family="Arial, sans-serif" font-size="28" font-weight="bold" fill="white">LXC</text>
+</svg>

@@ -1,0 +1,209 @@
+#!/bin/bash
+
+################################################################################
+# FnLxc 服务管理器
+# 负责启动、停止、重启、查询 FnLxc Python FastAPI 服务
+################################################################################
+
+# ── 路径自动检测（支持 appcenter / 手动部署 / 开发环境多重上下文） ──
+if [ -z "${TRIM_APPDEST}" ]; then
+    # 尝试从各种常见路径推断
+    for candidate in /var/apps/fnlxc /usr/local/apps/@appcenter/fnlxc /workspace/fnlxc; do
+        if [ -d "${candidate}" ] && [ -f "${candidate}/server/fnlxc_server" ]; then
+            export TRIM_APPDEST="${candidate}"
+            break
+        fi
+    done
+fi
+# 兜底
+TRIM_APPDEST="${TRIM_APPDEST:-/var/apps/fnlxc}"
+
+[ -z "${TRIM_PKGVAR}" ] && TRIM_PKGVAR="${TRIM_APPDEST}/var"
+
+APP_NAME="fnlxc"
+LOG_FILE="${TRIM_PKGVAR}/${APP_NAME}.log"
+PID_FILE="${TRIM_PKGVAR}/${APP_NAME}.pid"
+SOCKET_PATH="${TRIM_APPDEST}/lxcmanager.sock"
+PYTHON_SERVER="${TRIM_APPDEST}/server/fnlxc_server"
+
+# 确保日志目录存在
+mkdir -p "$(dirname "${LOG_FILE}")"
+
+log_msg()
+{
+    echo "$(date '+%Y-%m-%d %H:%M:%S') - $1" | tee -a "${LOG_FILE}"
+}
+
+# 检查进程是否在运行
+check_process()
+{
+    local pid=$1
+    [ -z "${pid}" ] && return 1
+    ps -p "${pid}" > /dev/null 2>&1
+}
+
+# 查询状态（只输出到 stdout，不写日志文件，避免 fnOS 轮询刷屏）
+do_status()
+{
+    if [ -f "${PID_FILE}" ]; then
+        local pid
+        pid=$(cat "${PID_FILE}" 2>/dev/null)
+        if check_process "${pid}"; then
+            # PID 变动时才打印，避免 fnOS 轮询刷屏
+            local last_pid_file="/tmp/fnlxc_last_pid"
+            local last_pid=""
+            [ -f "${last_pid_file}" ] && last_pid=$(cat "${last_pid_file}")
+            if [ "${last_pid}" != "${pid}" ]; then
+                echo "${APP_NAME} 正在运行 (PID: ${pid})"
+                echo "${pid}" > "${last_pid_file}"
+            fi
+            return 0
+        else
+            echo "${APP_NAME} 进程已停止，但 PID 文件存在 (PID: ${pid})"
+            rm -f "${PID_FILE}"
+            return 1
+        fi
+    else
+        echo "${APP_NAME} 未运行"
+        return 3
+    fi
+}
+
+# 启动服务
+do_start()
+{
+    # 启动前先清理旧进程
+    local old_pids
+    old_pids=$(pgrep -f 'python.*fnlxc.py' 2>/dev/null || true)
+    if [ -n "${old_pids}" ]; then
+        pkill -f 'python.*fnlxc\.py' 2>/dev/null || true
+        sleep 1
+    fi
+    rm -f "${SOCKET_PATH}" "${PID_FILE}"
+
+    if do_status &>/dev/null; then
+        log_msg "${APP_NAME} 已经在运行"
+        return 0
+    fi
+
+    log_msg "正在启动 ${APP_NAME}..."
+
+    # 检查 Python 3 是否可用
+    if ! command -v python3 &>/dev/null; then
+        log_msg "错误: python3 未安装"
+        return 1
+    fi
+
+    # 检查服务器脚本
+    if [ ! -x "${PYTHON_SERVER}" ]; then
+        log_msg "错误: 服务器脚本不存在或不可执行: ${PYTHON_SERVER}"
+        return 1
+    fi
+
+    # 清理旧的 unix socket
+    rm -f "${SOCKET_PATH}"
+
+    # 后台启动 Python 服务（以 lxc 用户运行，降权）
+    (
+        export TRIM_SERVICE_SOCKET="${SOCKET_PATH}"
+        export TRIM_APPDEST="${TRIM_APPDEST}"
+        export TRIM_PKGVAR="${TRIM_PKGVAR}"
+        cd "$(dirname "${PYTHON_SERVER}")" || exit 1
+        su -s /bin/bash lxc -c './fnlxc_server' 2>/dev/null || ./fnlxc_server
+    ) >> "${LOG_FILE}" 2>&1 &
+
+    local pid=$!
+    echo "${pid}" > "${PID_FILE}"
+    log_msg "${APP_NAME} 启动中 (PID: ${pid})"
+
+    # 等待 socket 创建
+    local i
+    for i in $(seq 1 30); do
+        if [ -S "${SOCKET_PATH}" ]; then
+            chmod 666 "${SOCKET_PATH}" 2>/dev/null || true
+            log_msg "${APP_NAME} 已启动 (socket: ${SOCKET_PATH})"
+            return 0
+        fi
+        sleep 0.5
+    done
+
+    log_msg "警告: 未检测到 socket ${SOCKET_PATH}，服务可能仍在初始化"
+    return 0
+}
+
+# 停止服务
+do_stop()
+{
+    log_msg "正在停止 ${APP_NAME}..."
+
+    if [ -f "${PID_FILE}" ]; then
+        local pid
+        pid=$(cat "${PID_FILE}" 2>/dev/null)
+
+        if [ -n "${pid}" ] && check_process "${pid}"; then
+            log_msg "正在停止进程 (PID: ${pid})..."
+            kill -TERM "${pid}" 2>/dev/null || kill -9 "${pid}" 2>/dev/null
+
+            local count=0
+            while check_process "${pid}" && [ $count -lt 10 ]; do
+                sleep 1
+                count=$((count + 1))
+            done
+
+            if check_process "${pid}"; then
+                kill -9 "${pid}" 2>/dev/null
+            fi
+        fi
+
+        rm -f "${PID_FILE}"
+        log_msg "${APP_NAME} 已停止"
+    else
+        log_msg "${APP_NAME} 未运行"
+    fi
+
+    # 清理所有 fnlxc.py 孤儿进程（防止多实例残留）
+    local orphans
+    orphans=$(pgrep -f 'python.*fnlxc.py' 2>/dev/null || true)
+    if [ -n "${orphans}" ]; then
+        log_msg "清理孤儿进程: ${orphans}"
+        pkill -f 'python.*fnlxc\.py' 2>/dev/null || true
+        sleep 1
+        # 再次检查，没死的强制杀
+        orphans=$(pgrep -f 'python.*fnlxc.py' 2>/dev/null || true)
+        if [ -n "${orphans}" ]; then
+            pkill -9 -f 'python.*fnlxc\.py' 2>/dev/null || true
+        fi
+    fi
+
+    rm -f "${SOCKET_PATH}"
+}
+
+# 重启服务
+do_restart()
+{
+    do_stop
+    sleep 2
+    do_start
+}
+
+# 主逻辑
+case "$1" in
+    start)
+        do_start
+        ;;
+    stop)
+        do_stop
+        ;;
+    restart)
+        do_restart
+        ;;
+    status)
+        do_status
+        ;;
+    *)
+        echo "使用方法: $0 {start|stop|restart|status}"
+        exit 1
+        ;;
+esac
+
+exit $?

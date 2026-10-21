@@ -1,0 +1,11 @@
+[
+    {
+        "stepTitle": "卸载 FnLxc",
+        "items": [
+            {
+                "type": "tips",
+                "helpText": "确定要卸载 FnLxc 容器管理应用吗？容器数据与模板缓存会保留在原有目录，不会删除。"
+            }
+        ]
+    }
+]

@@ -1,0 +1,349 @@
+#!/bin/bash
+#
+# lxc-local — LXC 自定义本地模板
+# 从本地缓存读取 rootfs.tar.xz 解压到容器目录
+#
+# 用法: lxc-create -n <name> -t local -- <distro> [release] [arch]
+#   e.g.: lxc-create -n mycontainer -t local -- ubuntu jammy amd64
+#
+# 环境变量:
+#   LXC_TEMPLATE_CACHE_PATH   本地镜像缓存根目录（从配置读取）
+#   LXC_NAME                  容器名称（lxc-create 自动传入）
+#
+# 缓存格式:
+#   <cache_path>/<distro>/<release>/<arch>/rootfs.tar.xz
+#   e.g.: /var/cache/lxc/images/ubuntu/jammy/amd64/rootfs.tar.xz
+#
+# 支持的发行版:
+#   ubuntu, debian, alpine, almalinux, centos, fedora, opensuse, archlinux, gentoo, oracle, rockylinux, void
+#
+
+set -e
+
+TEMPLATE_NAME="local"
+VERSION="1.0.0"
+
+# ── 配置路径 ──────────────────────────────────────
+CONFIG_FILE="/var/apps/fnlxc/etc/config.env"
+DEFAULT_CACHE_PATH="/var/cache/lxc/images"
+
+# ── 工具 ──────────────────────────────────────────
+MKDIR="/bin/mkdir"
+RM="/bin/rm"
+TAR="/bin/tar"
+CP="/bin/cp"
+LN="/bin/ln"
+CAT="/bin/cat"
+SED="/bin/sed"
+HOSTNAME="/bin/hostname"
+LOG="/usr/bin/logger -t lxc-local"
+
+# ── 颜色 ──────────────────────────────────────────
+RED='\033[0;31m'
+GREEN='\033[0;32m'
+YELLOW='\033[1;33m'
+CYAN='\033[0;36m'
+NC='\033[0m'
+
+info()    { echo -e "${CYAN}[lxc-local]${NC} $*"; }
+warn()    { echo -e "${YELLOW}[WARN]${NC} $*" >&2; }
+error()   { echo -e "${RED}[ERROR]${NC} $*" >&2; $LOG "$*"; }
+cleanup() {
+    local exit_code=$?
+    if [ $# -gt 0 ] && [ -n "$1" ]; then
+        error "创建失败，清理中..."
+    fi
+    # 清理临时文件
+    if [ -n "$TMP_ROOTFS" ] && [ -d "$TMP_ROOTFS" ]; then
+        $RM -rf "$TMP_ROOTFS" 2>/dev/null || true
+    fi
+    return $exit_code
+}
+trap cleanup EXIT
+
+# ── 加载配置 ──────────────────────────────────────
+load_config() {
+    CACHE_PATH="$DEFAULT_CACHE_PATH"
+    if [ -f "$CONFIG_FILE" ]; then
+        # shellcheck source=/dev/null
+        source "$CONFIG_FILE"
+    fi
+    CACHE_PATH="${LXC_TEMPLATE_CACHE_PATH:-$CACHE_PATH}"
+}
+
+# ── 打印用法 ──────────────────────────────────────
+usage() {
+    cat <<EOF
+lxc-local — LXC 本地模板
+
+Usage:
+  lxc-create -n <name> -t local -- <distro> [release] [arch]
+
+Examples:
+  lxc-create -n mybox -t local -- ubuntu jammy amd64
+  lxc-create -n mybox -t local -- alpine 3.20 amd64
+  lxc-create -n mybox -t local -- debian 12 amd64
+
+Container directory: \$LXC_PATH/containers/<name>/rootfs/
+EOF
+}
+
+# ── 解析参数 ──────────────────────────────────────
+# lxc-create 传入: --name=<name> --path=<path> --rootfs=<rootfs> -- distro release arch
+# 内部参数以 --key=value 或 --key 格式，紧跟 -- 分隔符
+parse_args() {
+    local done_sep=0
+
+    # 逐个处理参数，跳过所有 --key=value 格式的内部参数
+    for arg in "$@"; do
+        if [ "$done_sep" = "0" ]; then
+            if [ "$arg" = "--" ]; then
+                done_sep=1
+                continue
+            fi
+            # 提取 --name=<value>
+            case "$arg" in
+                --name=*) CONTAINER_NAME="${arg#--name=}" ;;
+            esac
+            # 跳过所有 -- 开头的内部参数 (--name=, --path=, --rootfs= 等)
+            continue
+        fi
+
+        # -- 之后的才是 distro/release/arch
+        if [ -z "$DISTRO" ]; then
+            DISTRO="$arg"
+        elif [ -z "$RELEASE" ]; then
+            RELEASE="$arg"
+        elif [ -z "$ARCH" ]; then
+            ARCH="$arg"
+        else
+            break
+        fi
+    done
+
+    # 填充默认值
+    DISTRO="${DISTRO:-ubuntu}"
+    RELEASE="${RELEASE:-}"
+    ARCH="${ARCH:-amd64}"
+
+    if [ -z "$RELEASE" ]; then
+        RELEASE="default"
+    fi
+}
+
+# ── 标准化发行版名称 ────────────────────────────────
+normalize_release() {
+    # 如果 release 包含特殊字符，使用简化路径
+    # ubuntu/jammy/amd64  路径格式
+    # debian/12/amd64
+    # alpine/3.20/amd64
+    # centos/8-Stream/amd64
+    # 有些镜像 release 带版本代号需要转换
+    :
+}
+
+# ── 查找缓存的 rootfs ──────────────────────────────
+find_cached_rootfs() {
+    local candidates=(
+        "${CACHE_PATH}/${DISTRO}/${RELEASE}/${ARCH}/rootfs.tar.xz"
+        "${CACHE_PATH}/${DISTRO,,}/${RELEASE}/${ARCH}/rootfs.tar.xz"  # 小写 distro
+        "${CACHE_PATH}/${DISTRO}/${RELEASE,,}/${ARCH}/rootfs.tar.xz"  # 小写 release
+        "${CACHE_PATH}/${DISTRO}/${RELEASE}/${ARCH,,}/rootfs.tar.xz"  # 小写 arch
+    )
+
+    for cand in "${candidates[@]}"; do
+        if [ -f "$cand" ]; then
+            ROOTFS_TARBALL="$cand"
+            return 0
+        fi
+    done
+
+    # 尝试不指定 release 的路径（某些镜像没有 release 子目录）
+    local generic=(
+        "${CACHE_PATH}/${DISTRO}/default/${ARCH}/rootfs.tar.xz"
+        "${CACHE_PATH}/${DISTRO}/latest/${ARCH}/rootfs.tar.xz"
+    )
+    for cand in "${generic[@]}"; do
+        if [ -f "$cand" ]; then
+            ROOTFS_TARBALL="$cand"
+            return 0
+        fi
+    done
+
+    return 1
+}
+
+# ── 下载缺失的镜像 ─────────────────────────────────
+ensure_cached() {
+    if find_cached_rootfs; then
+        return 0
+    fi
+
+    info "本地缓存未找到: ${DISTRO}/${RELEASE}/${ARCH}"
+    info "尝试自动下载..."
+
+    # 调用 lxc-fetch 下载
+    if command -v lxc-fetch &>/dev/null; then
+        if lxc-fetch "$DISTRO" "$RELEASE" "$ARCH"; then
+            # 重试查找
+            find_cached_rootfs && return 0
+        fi
+    fi
+
+    error "镜像缓存不存在，请先运行: lxc-fetch ${DISTRO} ${RELEASE} ${ARCH}"
+    return 1
+}
+
+# ── 创建容器目录结构 ────────────────────────────────
+create_container_dirs() {
+    local lxc_path="${LXC_PATH:-/var/lib/lxc}"
+    CONTAINER_PATH="${lxc_path}/${CONTAINER_NAME}"
+    ROOTFS_PATH="${CONTAINER_PATH}/rootfs"
+
+    if [ -d "$CONTAINER_PATH" ]; then
+        warn "容器目录已存在: $CONTAINER_PATH"
+        warn "删除旧目录..."
+        lxc-destroy -n "$CONTAINER_NAME" -f 2>/dev/null || {
+            $RM -rf "$CONTAINER_PATH"
+        }
+    fi
+
+    $MKDIR -p "$ROOTFS_PATH"
+    info "容器路径: $CONTAINER_PATH"
+}
+
+# ── 解压 rootfs ───────────────────────────────────
+extract_rootfs() {
+    info "解压 rootfs: $ROOTFS_TARBALL"
+
+    local size
+    size=$(du -h "$ROOTFS_TARBALL" 2>/dev/null | cut -f1)
+    info "镜像大小: ${size}"
+
+    # 使用 tar 解压（支持 xz 压缩）
+    # 解压到 rootfs 目录
+    if ! $TAR xf "$ROOTFS_TARBALL" -C "$ROOTFS_PATH" 2>&1; then
+        error "解压失败: $ROOTFS_TARBALL → $ROOTFS_PATH"
+        return 1
+    fi
+
+    # 验证解压结果
+    if [ ! -d "$ROOTFS_PATH/etc" ] && [ ! -d "$ROOTFS_PATH/bin" ]; then
+        error "解压结果异常，rootfs 目录内容不符"
+        ls -la "$ROOTFS_PATH/" | head -20
+        return 1
+    fi
+
+    info "解压完成 ✓"
+    return 0
+}
+
+# ── 配置容器 ──────────────────────────────────────
+configure_container() {
+    local config_file="${CONTAINER_PATH}/config"
+    local rootfs_dev="$($TAR xf "$ROOTFS_TARBALL" -O dev/null 2>/dev/null || echo "dir")"
+
+    info "配置容器..."
+
+    # 写入基础配置
+    cat >> "$config_file" <<EOF
+
+# ── lxc-local 模板生成 ──────────────────────────────
+lxc.uts.name = ${CONTAINER_NAME}
+lxc.rootfs.path = dir:${ROOTFS_PATH}
+lxc.net.0.type = veth
+lxc.net.0.flags = up
+lxc.net.0.link = ${LXC_BRIDGE:-br0}
+lxc.net.0.name = eth0
+
+# AppArmor 配置（fnOS 需要 unconfined）
+lxc.apparmor.profile = unconfined
+lxc.apparmor.allow_nesting = 1
+
+# 自动启动
+lxc.start.auto = 0
+lxc.start.delay = 2
+EOF
+
+    info "容器配置已写入 ✓"
+    return 0
+}
+
+# ── 配置网络 ──────────────────────────────────────
+configure_network() {
+    local config_file="${CONTAINER_PATH}/config"
+    local net_type="${LXC_NETWORK_TYPE:-veth}"
+    local net_link="${LXC_BRIDGE:-br0}"
+
+    # 网络已在上一步配置写入，此处可做额外调整
+    $SED -i "s|lxc.net.0.link = .*|lxc.net.0.link = ${net_link}|" "$config_file" 2>/dev/null || true
+}
+
+# ── 修复 hostname ─────────────────────────────────
+fix_hostname() {
+    # 设置容器的 hostname
+    echo "$CONTAINER_NAME" > "$ROOTFS_PATH/etc/hostname" 2>/dev/null || true
+
+    # 更新 /etc/hosts
+    if [ -f "$ROOTFS_PATH/etc/hosts" ]; then
+        if ! grep -q "$CONTAINER_NAME" "$ROOTFS_PATH/etc/hosts" 2>/dev/null; then
+            echo "127.0.1.1    $CONTAINER_NAME" >> "$ROOTFS_PATH/etc/hosts" 2>/dev/null || true
+        fi
+    fi
+}
+
+# ── 打印成功信息 ───────────────────────────────────
+print_success() {
+    cat <<EOF
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+  容器创建成功: ${CONTAINER_NAME}
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+  模板:    lxc-local
+  发行版:  ${DISTRO}/${RELEASE}/${ARCH}
+  缓存:    ${ROOTFS_TARBALL}
+  路径:    ${CONTAINER_PATH}/
+
+  下一步:
+    lxc-start -n ${CONTAINER_NAME}
+    lxc-console -n ${CONTAINER_NAME}
+    lxc-stop -n ${CONTAINER_NAME}
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+EOF
+}
+
+# ── 主流程 ─────────────────────────────────────────
+main() {
+    # 如果有 --help 或无参数则打印用法
+    if [ "$1" = "--help" ] || [ $# -eq 0 ]; then
+        usage
+        exit 0
+    fi
+
+    info "lxc-local 模板 v${VERSION}"
+    info "参数: $*"
+
+    load_config
+    parse_args "$@"
+
+    info "容器: ${CONTAINER_NAME}"
+    info "镜像: ${DISTRO}/${RELEASE}/${ARCH}"
+    info "缓存: ${CACHE_PATH}"
+
+    ensure_cached
+    create_container_dirs
+    extract_rootfs
+    configure_container
+    configure_network
+    fix_hostname
+
+    echo
+    print_success
+
+    # 取消 cleanup trap（成功情况）
+    trap - EXIT
+    return 0
+}
+
+main "$@"

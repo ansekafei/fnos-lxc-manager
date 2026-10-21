@@ -1,0 +1,530 @@
+#!/bin/bash
+
+### 卸载后清理 — 可选卸载 LXC 系统包
+
+SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
+
+################################################################################
+# FnLxc 公共函数库
+# 包含安装、卸载、升级过程中使用的公共函数
+################################################################################
+
+# ============================================================================
+# 工具快捷方式
+# ============================================================================
+MV="/bin/mv -f"
+RM="/bin/rm -rf"
+CP="/bin/cp -rfp"
+MKDIR="/bin/mkdir -p"
+LN="/bin/ln -nsf"
+
+# ============================================================================
+# 路径定义
+# ============================================================================
+INST_ETC="/var/apps/${TRIM_APPNAME}/etc"
+INST_VARIABLES="${INST_ETC}/installer-variables"
+INST_LOG="/var/log/apps/${TRIM_APPNAME}.log"
+
+LOG_FILE="${TRIM_PKGVAR}/${TRIM_APPNAME}.log"
+PID_FILE="${TRIM_PKGVAR}/${TRIM_APPNAME}.pid"
+
+# ============================================================================
+# 日志函数
+# ============================================================================
+install_log()
+{
+    local _msg_="$@"
+    if [ -z "${_msg_}" ]; then
+        while IFS=$'\n' read -r line; do
+            install_log "${line}"
+        done
+    else
+        echo -e "$(date +'%Y/%m/%d %H:%M:%S')\t${_msg_}" 1>&2
+    fi
+}
+
+log_step()
+{
+    install_log "===> Step $1  STATUS=${TRIM_APP_STATUS}  PKGVAR=${TRIM_PKGVAR}"
+}
+
+# ============================================================================
+# 检查 LXC 是否可用
+# ============================================================================
+check_lxc_installed()
+{
+    install_log "检查 LXC 环境..."
+
+    local missing=""
+
+    for bin in lxc-create lxc-start lxc-stop lxc-info lxc-attach lxc-snapshot lxc-clone lxc-destroy lxc-config bridge-utils; do
+        if ! command -v "$bin" &>/dev/null && [ ! -x "/usr/bin/$bin" ] && [ ! -x "/usr/local/bin/$bin" ]; then
+            missing="${missing} $bin"
+        fi
+    done
+
+    if [ -n "${missing}" ]; then
+        install_log "警告: 以下 LXC 组件未找到:${missing}"
+        install_log "容器管理功能可能受限"
+        return 1
+    fi
+
+    install_log "LXC 环境检查通过"
+    return 0
+}
+
+# ============================================================================
+# 检查 /var/lib/lxc 路径
+# ============================================================================
+check_lxc_path()
+{
+    if [ ! -d "/var/lib/lxc" ]; then
+        install_log "错误: /var/lib/lxc 目录不存在"
+        return 1
+    fi
+    install_log "LXC 数据路径: /var/lib/lxc"
+    return 0
+}
+
+# ============================================================================
+# 创建网桥 br-fnosswitch（如果不存在）
+# ============================================================================
+setup_network_bridge()
+{
+    install_log "检查网络桥接..."
+
+    if ip link show br-fnosswitch &>/dev/null; then
+        install_log "网桥 br-fnosswitch 已存在"
+        return 0
+    fi
+
+    install_log "创建网桥 br-fnosswitch..."
+
+    # 检查是否有网桥工具
+    if command -v brctl &>/dev/null; then
+        brctl addbr br-fnosswitch
+        brctl setfd br-fnosswitch 0
+        ip link set br-fnosswitch up
+        install_log "网桥 br-fnosswitch 创建成功"
+    else
+        # 尝试使用 ip 命令
+        if ip link add br-fnosswitch type bridge 2>/dev/null; then
+            ip link set br-fnosswitch up
+            install_log "网桥 br-fnosswitch 创建成功（使用 ip 命令）"
+        else
+            install_log "警告: 无法创建网桥，容器可能无法使用网络"
+        fi
+    fi
+
+    return 0
+}
+
+# ============================================================================
+# 配置 NAT 转发（如果需要）
+# ============================================================================
+setup_nat()
+{
+    install_log "检查 NAT 转发配置..."
+
+    # 检查是否已有 NAT 规则
+    if iptables -t nat -L POSTROUTING -n 2>/dev/null | grep -q "10.0.3.0/24"; then
+        install_log "NAT 规则已存在"
+        return 0
+    fi
+
+    install_log "配置 NAT 转发（10.0.3.0/24）..."
+
+    # 添加 NAT 规则（临时，重启后失效）
+    iptables -t nat -A POSTROUTING -s 10.0.3.0/24 ! -d 10.0.3.0/24 -j MASQUERADE 2>/dev/null || {
+        install_log "警告: 无法添加 NAT 规则，容器网络可能受限"
+    }
+
+    install_log "NAT 转发配置完成"
+    return 0
+}
+
+# ============================================================================
+# 创建应用配置目录
+# ============================================================================
+create_app_dirs()
+{
+    install_log "创建应用配置目录..."
+
+    MKDIR="${INST_ETC}"
+    mkdir -p "${INST_ETC}"
+    mkdir -p "${TRIM_PKGVAR}"
+
+    # 创建默认配置
+    cat > "${INST_ETC}/config.env" << 'EOF'
+LXC_PATH=/var/lib/lxc
+LXC_BRIDGE=br-fnosswitch
+LXC_NETWORK=10.0.3.0/24
+LXC_TEMPLATE_CACHE_PATH=/var/cache/lxc/images
+LXC_TEMPLATE_CACHE_AUTO_WARM=false
+EOF
+
+    install_log "应用目录创建完成: ${INST_ETC}"
+    return 0
+}
+
+# ============================================================================
+# 清理函数
+# ============================================================================
+clean_all_data()
+{
+    install_log "删除所有用户数据..."
+
+    # fnOS 实际安装路径分三部分：
+    #   @appcenter  → 程序文件（TRIM_APPDEST）
+    #   @appdata    → 运行时数据（PKGVAR）
+    #   @appconf    → 配置文件（TRIM_PKGETC）
+    # 三种路径都要清理干净
+    for _dir in \
+        "${TRIM_APPDEST:-/var/apps/fnlxc}" \
+        "/usr/local/apps/@appcenter/fnlxc" \
+        "/usr/local/apps/@appdata/fnlxc" \
+        "/usr/local/apps/@appconf/fnlxc" \
+        "${PKGVAR:-}" \
+        "${TRIM_PKGETC:-}" \
+        ; do
+        [ -n "$_dir" ] && rm -rf "$_dir" 2>/dev/null || true
+    done
+
+    # 删除安装变量记录
+    rm -f "${INST_VARIABLES}" 2>/dev/null || true
+
+    install_log "用户数据清理完成"
+    return 0
+}
+
+# ============================================================================
+# 安装 LXC 软件包
+# ============================================================================
+install_lxc_packages()
+{
+    install_log "检查 LXC 系统组件..."
+
+    local pkgs="lxc lxc-templates lxcfs bridge-utils"
+    local missing=""
+
+    for pkg in $pkgs; do
+        if ! dpkg -s "$pkg" &>/dev/null 2>&1; then
+            missing="${missing} $pkg"
+        fi
+    done
+
+    if [ -z "${missing}" ]; then
+        install_log "LXC 组件已全部安装"
+        return 0
+    fi
+
+    install_log "需要安装:${missing}"
+    DEBIAN_FRONTEND=noninteractive apt-get update -qq 2>/dev/null || true
+    DEBIAN_FRONTEND=noninteractive apt-get install -y -qq $missing 2>&1 | while read line; do
+        install_log "  apt: $line"
+    done
+
+    # 验证安装
+    local failed=""
+    for pkg in $missing; do
+        if ! dpkg -s "$pkg" &>/dev/null 2>&1; then
+            failed="${failed} $pkg"
+        fi
+    done
+
+    if [ -n "$failed" ]; then
+        install_log "警告: 以下组件安装失败:${failed}"
+        return 1
+    fi
+
+    install_log "LXC 组件安装完成"
+    return 0
+}
+
+# ============================================================================
+# 卸载 LXC 软件包（保留依赖）
+# ============================================================================
+remove_lxc_packages()
+{
+    install_log "卸载 LXC 系统组件..."
+    local pkgs="lxc lxc-templates lxcfs liblxc-common liblxc1 bridge-utils"
+    DEBIAN_FRONTEND=noninteractive apt-get remove -y -qq $pkgs 2>&1 | while read line; do
+        install_log "  apt: $line"
+    done
+    DEBIAN_FRONTEND=noninteractive apt-get autoremove -y -qq 2>/dev/null || true
+    install_log "LXC 组件已卸载"
+    return 0
+}
+
+# ============================================================================
+# 修复 lxc-download 模板（清华镜像源路径修正）
+# ============================================================================
+patch_lxc_download_template()
+{
+    local LXC_DL="/usr/share/lxc/templates/lxc-download"
+    if [ ! -f "$LXC_DL" ]; then
+        install_log "lxc-download 模板未找到，跳过修复"
+        return 0
+    fi
+
+    # 备份
+    [ ! -f "${LXC_DL}.bak" ] && cp "$LXC_DL" "${LXC_DL}.bak"
+
+    local patched=false
+    if ! grep -q "lxc-images" "$LXC_DL" 2>/dev/null; then
+        sed -i 's|"https://${DOWNLOAD_SERVER}/$1"|"https://${DOWNLOAD_SERVER}$1"|g' "$LXC_DL"
+        sed -i 's|DOWNLOAD_INDEX_PATH="/meta/1.0/index-${DOWNLOAD_MODE}"|DOWNLOAD_INDEX_PATH="/lxc-images/meta/1.0/index-${DOWNLOAD_MODE}"|g' "$LXC_DL"
+        sed -i 's|DOWNLOAD_URL="${f6}"|DOWNLOAD_URL="/lxc-images${f6}"|g' "$LXC_DL"
+        patched=true
+    fi
+
+    if $patched; then
+        install_log "lxc-download 模板已修复（清华镜像源路径）"
+    else
+        install_log "lxc-download 模板已修复，跳过"
+    fi
+    return 0
+}
+
+# ============================================================================
+# 配置系统 sysctl 参数
+# ============================================================================
+setup_sysctl()
+{
+    local conf="/etc/sysctl.d/99-fnlxc.conf"
+    local need_restart=false
+
+    for param in "net.ipv4.ip_forward=1" \
+                 "net.bridge.bridge-nf-call-iptables=1" \
+                 "net.bridge.bridge-nf-call-ip6tables=1"; do
+        key="${param%%=*}"
+        val="${param#*=}"
+        current=$(sysctl -n "$key" 2>/dev/null || echo "")
+        if [ "$current" != "$val" ]; then
+            sysctl -w "$key=$val" >/dev/null 2>&1 || true
+            need_restart=true
+        fi
+    done
+
+    if $need_restart; then
+        cat > "$conf" << 'SYSCTL_EOF'
+# FnLxc - LXC 容器网络所需内核参数
+net.ipv4.ip_forward = 1
+net.bridge.bridge-nf-call-iptables = 1
+net.bridge.bridge-nf-call-ip6tables = 1
+SYSCTL_EOF
+        install_log "sysctl 参数已写入: $conf"
+    fi
+    return 0
+}
+
+# ── 修复应用中心解包目录的执行位 ──────────────────────────────
+# 飞牛应用中心把 fpk 解包到 /vol{n}/appcenter-downloads/{appname}-{ver}-tpk 时，
+# 目录权限被建成 0644（缺 x 位），连 root 都无法进入，
+# 于是升级流程的 InstallFileToDisk 读目录失败并触发空指针 panic。
+# install_init / upgrade_init 在文件复制之前执行，这里把执行位补回来。
+fix_package_dir_perms()
+{
+    local n="${TRIM_APPNAME:-fnlxc}"
+    local d
+    for d in /vol*/appcenter-downloads/"${n}"-*-tpk; do
+        [ -d "$d" ] || continue
+        chmod 755 "$d" 2>/dev/null || true
+    done
+    return 0
+}
+
+
+install_log "停止 FnLxc 服务..."
+"${SCRIPT_DIR}/main" stop 2>/dev/null || true
+sleep 2
+
+# ── 读取用户卸载选项 ──────────────────────────────
+REMOVE_LXC="${remove_lxc:-}"
+REMOVE_DATA="${remove_data:-}"
+
+if [ -f "${INST_VARIABLES}" ]; then
+    source "${INST_VARIABLES}"
+    REMOVE_LXC="${remove_lxc:-$REMOVE_LXC}"
+    REMOVE_DATA="${remove_data:-$REMOVE_DATA}"
+fi
+
+install_log "用户选项: 卸载LXC=${REMOVE_LXC}, 删除数据=${REMOVE_DATA}"
+
+# ── 读取配置（提前到此处，供 unmount 使用）──────────
+# fnOS 实际路径：@appcenter（程序）+ @appdata（数据）
+# 注意：config 文件在最后的 clean_all_data 之前必须保持存在，
+#       否则读不到 lxc_path 会导致子卷清理被跳过
+for _cfg in \
+    "/usr/local/apps/@appcenter/fnlxc/config/fnlxc.cfg" \
+    "/usr/local/apps/@appdata/fnlxc/config/fnlxc.cfg" \
+    "/var/apps/fnlxc/config/fnlxc.cfg" \
+    "${INST_ETC}/fnlxc.cfg" \
+    ; do
+    [ -f "$_cfg" ] && CONFIG_FILE="$_cfg" && break
+done
+LXC_DATA_DIR="/vol1/lxc"
+ZFS_POOL=""
+
+if [ -f "$CONFIG_FILE" ]; then
+    while IFS='=' read -r key val; do
+        case "$key" in
+            lxc_path)  [ -n "$val" ] && LXC_DATA_DIR="$val" ;;
+            zfs_pool)  [ -n "$val" ] && ZFS_POOL="$val" ;;
+        esac
+    done < "$CONFIG_FILE"
+    install_log "从配置读取: LXC_DATA_DIR=$LXC_DATA_DIR ZFS_POOL=$ZFS_POOL"
+fi
+
+# ── btrfs 子卷清理辅助 ─────────────────────────────
+_fs_type() { stat -f -c %T "$1" 2>/dev/null || echo ""; }
+
+# 删除目录下所有 btrfs 子卷（由深到浅，先删快照/嵌套子卷，再删 rootfs）
+delete_subvols_under() {
+    local root="$1"
+    [ -d "$root" ] || return 0
+    [ "$(_fs_type "$root")" = "btrfs" ] || return 0
+    command -v btrfs >/dev/null 2>&1 || return 0
+    find "$root" -mindepth 1 -depth -type d 2>/dev/null | while read -r p; do
+        if btrfs subvolume show "$p" >/dev/null 2>&1; then
+            install_log "删除子卷: $p"
+            btrfs subvolume delete "$p" >/dev/null 2>&1 || true
+        fi
+    done
+}
+
+# FnLxc 可能的容器存储目录（config 里的优先，其余为默认候选）
+fnlxc_storage_dirs() {
+    echo "$LXC_DATA_DIR"
+    for d in /vol1/lxc /vol2/lxc /vol3/lxc /vol4/lxc /var/lib/lxc; do
+        [ "$d" = "$LXC_DATA_DIR" ] || echo "$d"
+    done
+}
+
+# ── 停止所有 LXC 容器（清理数据之前必须）────────────
+# 注意：不使用 -P 参数，因为容器可能分布在多个目录（/vol1/lxc、/var/lib/lxc 等）
+# lxc-ls 默认遍历所有配置的路径，--running 找到所有运行中容器
+STOPPED_ANY=0
+# 先禁止所有容器自启动，防止重装后自动拉起
+for c in $(lxc-ls 2>/dev/null); do
+    # 遍历所有可能的容器配置路径
+    for _p in /vol1/lxc /vol2/lxc /vol3/lxc /vol4/lxc /var/lib/lxc; do
+        _cfg_file="${_p}/${c}/config"
+        [ -f "$_cfg_file" ] || continue
+        # lxc.start.auto 可能写成 "=1" 或 "= 1"，两种都处理
+        if grep -qE "^lxc.start.auto\s*=\s*1" "$_cfg_file" 2>/dev/null; then
+            sed -iE 's/^lxc.start.auto\s*=\s*1/lxc.start.auto = 0/' "$_cfg_file"
+            install_log "已禁止容器自启动: $c"
+        fi
+    done
+done
+for c in $(lxc-ls --running 2>/dev/null); do
+    install_log "停止容器: $c"
+    lxc-stop -n "$c" -t 10 2>/dev/null || lxc-stop -n "$c" -k 2>/dev/null || true
+    STOPPED_ANY=1
+done
+[ "$STOPPED_ANY" = "1" ] && sleep 3
+
+# ── 清理 OVS 网络残留（veth 端口）─────────────────────
+# 容器若走 OVS 直连，会在 bondX-ovs 上留下 veth-<name>-h 端口，
+# 容器停止后 hook 一般已清理，这里兜底扫一遍（只匹配本应用的命名，不误伤 docker）。
+install_log "清理 OVS 网络残留..."
+if command -v ovs-vsctl >/dev/null 2>&1; then
+    for _p in $(ovs-vsctl list-ports 2>/dev/null | grep -E '^veth-[^-]+-[hc]$'); do
+        _br="$(ovs-vsctl port-to-br "$_p" 2>/dev/null)"
+        if [ -n "$_br" ]; then
+            ovs-vsctl --if-exists del-port "$_br" "$_p" 2>/dev/null || true
+            install_log "移除 OVS 端口: $_p (桥 $_br)"
+        fi
+    done
+fi
+for _v in $(ip -o link show 2>/dev/null | awk -F': ' '{print $2}' | grep -E '^veth-[^-]+-[hc]$'); do
+    ip link del "$_v" 2>/dev/null || true
+    install_log "删除 veth: $_v"
+done
+install_log "OVS 网络残留已清理"
+
+# ── 卸载阶段：dir 后端无需 unmount，仅记录当前存储目录 ──
+if [ -n "$LXC_DATA_DIR" ]; then
+    install_log "容器存储目录: $LXC_DATA_DIR（文件系统: $(_fs_type "$LXC_DATA_DIR")）"
+fi
+
+# ── 删除容器数据（如勾选）─ ─────────────────────────
+# 兼容各种框架传来的真值：true/1/yes/on
+is_true() { case "$1" in true|1|yes|on) return 0;; *) return 1;; esac; }
+
+if is_true "${REMOVE_DATA}"; then
+    install_log "正在删除用户数据..."
+
+    # ── btrfs: 销毁容器子卷（快照 → rootfs），再删目录 ──
+    while read -r d; do
+        [ -n "$d" ] || continue
+        [ -d "$d" ] || continue
+        install_log "清理存储目录: $d"
+        delete_subvols_under "$d"
+        rm -rf "$d" 2>/dev/null || true
+    done <<< "$(fnlxc_storage_dirs)"
+
+    install_log "容器数据已删除"
+fi
+
+# ── 卸载 LXC 系统包（如勾选）─ ──────────────────────
+if is_true "${REMOVE_LXC}"; then
+    install_log "正在卸载 LXC 系统组件..."
+    LXC_PKGS="lxc lxc-templates lxcfs liblxc-common liblxc1 bridge-utils"
+    # 不卸载 libvirt-daemon-driver-lxc（可能被其他应用依赖）
+    DEBIAN_FRONTEND=noninteractive apt-get remove -y -qq $LXC_PKGS 2>&1 | while read line; do install_log "  apt: $line"; done
+    DEBIAN_FRONTEND=noninteractive apt-get autoremove -y -qq 2>/dev/null || true
+    install_log "LXC 系统组件已卸载"
+
+    # 清理 LXC 默认路径数据
+    rm -rf /var/lib/lxc/* 2>/dev/null || true
+    rm -rf /var/cache/lxc/* 2>/dev/null || true
+
+    # 清理 sysctl 配置
+    rm -f /etc/sysctl.d/99-fnlxc.conf /etc/sysctl.d/99-fnlxc-ipforward.conf 2>/dev/null || true
+
+    # ── 删除 lxc 管理用户 ──────────────────────────
+    install_log "删除 lxc 管理用户..."
+    rm -f /etc/sudoers.d/lxc 2>/dev/null || true
+    userdel -r lxc 2>/dev/null || true
+    groupdel lxc 2>/dev/null || true
+    install_log "lxc 管理用户已清理"
+fi
+
+# ── 清理应用数据 ──────────────────────────────────
+install_log "清理应用数据..."
+clean_all_data
+
+# 删除 LXC 缓存软链
+if [ -L "/var/cache/lxc/download" ]; then
+    rm -f "/var/cache/lxc/download"
+    install_log "已删除 LXC 缓存软链"
+fi
+
+# ── 清理 iptables FORWARD 规则（lxcbr0）──────────────────
+install_log "清理 iptables FORWARD 规则..."
+iptables -t filter -D FORWARD -i lxcbr0 -j ACCEPT 2>/dev/null || true
+iptables -t filter -D FORWARD -o lxcbr0 -j ACCEPT 2>/dev/null || true
+iptables -t nat -D POSTROUTING -s 10.0.3.0/24 ! -d 10.0.3.0/24 -j MASQUERADE 2>/dev/null || true
+install_log "iptables 规则已清理"
+
+# ── 清理日志文件（主文件 + 轮转备份）─────────────────────
+install_log "清理日志文件..."
+rm -f /var/log/apps/fnlxc.log 2>/dev/null || true
+for i in $(seq 1 10); do
+    rm -f "/var/log/apps/fnlxc.log.$i" 2>/dev/null || true
+done
+install_log "日志文件已清理"
+
+# 清理 PID 和日志
+rm -f "${TRIM_PKGVAR}/fnlxc.pid" "${TRIM_PKGVAR}/fnlxc.log" 2>/dev/null || true
+
+# ── 删除 fnlxc 应用用户（无条件，这是本应用的专属系统用户）─ ──
+install_log "删除 fnlxc 应用用户..."
+userdel -r fnlxc 2>/dev/null || true
+groupdel fnlxc 2>/dev/null || true
+install_log "fnlxc 应用用户已清理"
+
+install_log "FnLxc 卸载完成"
+exit 0

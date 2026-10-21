@@ -1,0 +1,487 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+<title>FnLxc 容器管理</title>
+<script>
+/* 首帧前定主题，避免亮暗切换闪烁 */
+(function () {
+  try {
+    var t = localStorage.getItem('fnlxc-theme');
+    if (t !== 'light' && t !== 'dark') {
+      t = window.matchMedia && window.matchMedia('(prefers-color-scheme: light)').matches ? 'light' : 'dark';
+    }
+    document.documentElement.setAttribute('data-theme', t);
+  } catch (e) {
+    document.documentElement.setAttribute('data-theme', 'dark');
+  }
+})();
+</script>
+<link rel="stylesheet" href="/app/lxcmanager/style.css?v=131">
+<link rel="icon" href="/app/lxcmanager/assets/ICON-64.PNG" type="image/png">
+<link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/xterm@5.3.0/css/xterm.min.css">
+<script src="https://cdn.jsdelivr.net/npm/xterm@5.3.0/lib/xterm.min.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/xterm-addon-fit@0.8.0/lib/xterm-addon-fit.min.js"></script>
+</head>
+<body>
+<div id="app">
+  <!-- Header -->
+  <header class="app-header">
+    <nav class="tab-nav">
+      <button class="tab-btn active" data-tab="dashboard" onclick="switchTab('dashboard')"><span class="icon">📊</span>仪表盘</button>
+      <button class="tab-btn" data-tab="containers" onclick="switchTab('containers')"><span class="icon">📦</span>容器 <span id="container-count-badge" class="badge">0</span></button>
+      <button class="tab-btn" data-tab="create" onclick="switchTab('create')"><span class="icon">➕</span>创建</button>
+      <button class="tab-btn" data-tab="templates" onclick="switchTab('templates')"><span class="icon">📋</span>模板</button>
+      <button class="tab-btn" data-tab="settings" onclick="switchTab('settings')"><span class="icon">⚙️</span>设置</button>
+      <button class="tab-btn" data-tab="logs" onclick="switchTab('logs')"><span class="icon">📋</span>日志</button>
+    </nav>
+    <div class="header-actions">
+      <span class="header-stats" id="header-stats"></span>
+      <button class="theme-toggle" id="theme-toggle" onclick="toggleTheme()" title="切换亮色/深色" aria-label="切换主题">
+        <svg id="theme-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="4"/><path d="M12 2v2M12 20v2M4.9 4.9l1.4 1.4M17.7 17.7l1.4 1.4M2 12h2M20 12h2M4.9 19.1l1.4-1.4M17.7 6.3l1.4-1.4"/></svg>
+      </button>
+      <button class="btn btn-lg btn-ghost" onclick="refreshAll()" title="刷新">刷新</button>
+    </div>
+  </header>
+
+  <main class="main-content">
+
+    <!-- Tab: Dashboard -->
+    <section id="tab-dashboard" class="tab-content active">
+      <div class="dashboard-grid" id="dashboard-grid">
+        <div class="dashboard-loading"><div class="spinner"></div><p>加载仪表盘...</p></div>
+      </div>
+    </section>
+
+    <!-- Tab: Containers -->
+    <section id="tab-containers" class="tab-content">
+      <div class="toolbar">
+        <div class="toolbar-left">
+          <div class="filter-tabs" id="filter-tabs">
+            <button class="filter-tab active" data-filter="" onclick="setFilter('')">全部</button>
+            <button class="filter-tab" data-filter="running" onclick="setFilter('running')">运行中</button>
+            <button class="filter-tab" data-filter="stopped" onclick="setFilter('stopped')">停止</button>
+          </div>
+          <input type="text" id="search-containers" placeholder="搜索容器名称..." oninput="filterContainers()">
+        </div>
+        <div class="toolbar-right">
+          <span id="batch-info" class="batch-info" style="display:none;"></span>
+          <button class="btn btn-sm btn-success" id="btn-batch-start" style="display:none;" onclick="batchStart()">▶ 批量启动</button>
+          <button class="btn btn-sm btn-warning" id="btn-batch-stop" style="display:none;" onclick="batchStop()">⏹ 批量停止</button>
+          <button class="btn btn-sm btn-danger" id="btn-batch-delete" style="display:none;" onclick="batchDelete()">🗑 批量删除</button>
+        </div>
+      </div>
+      <div id="loading-containers" class="loading-state" style="display:none;"><div class="spinner"></div><p>加载容器列表...</p></div>
+      <div id="container-grid" class="container-grid"></div>
+      <div id="empty-containers" class="empty-state">
+        <div class="empty-icon">📦</div>
+        <h3>暂无容器</h3>
+        <p>点击「创建」选项卡来创建您的第一个 LXC 容器</p>
+      </div>
+    </section>
+
+    <!-- Tab: Create -->
+    <section id="tab-create" class="tab-content">
+      <h2>创建容器</h2>
+      <div class="create-tabs">
+        <button class="create-tab active" onclick="switchCreateTab('local')" data-create-tab="local">📁 本地模板</button>
+        <!-- <button class="create-tab" onclick="switchCreateTab('template')" data-create-tab="template">📦 从模板创建</button> -->
+        <button class="create-tab" onclick="switchCreateTab('clone')" data-create-tab="clone">📋 克隆容器</button>
+        <button class="create-tab" onclick="switchCreateTab('snapshot')" data-create-tab="snapshot">📸 从快照创建</button>
+        <button class="create-tab" onclick="switchCreateTab('backup')" data-create-tab="backup">💾 从备份恢复</button>
+      </div>
+
+      <!-- Template Create -->
+      <div id="create-template" class="create-section">
+        <form onsubmit="handleCreateFromTemplate(event)">
+          <div class="form-row">
+            <div class="form-group"><label>容器名称</label><input type="text" id="ct-name" name="name" required pattern="[a-zA-Z0-9][-a-zA-Z0-9_]*" placeholder="my-container"></div>
+            <div class="form-group"><label>系统模板</label><select id="ct-template" name="template" required onchange="handleTemplateChange(this.value)"><option value="">选择模板...</option></select></div>
+          </div>
+          <div class="form-row">
+            <div class="form-group"><label>发行版版本</label><select id="ct-release" name="release" required><option value="">— 先选发行版 —</option></select></div>
+            <div class="form-group"><label>架构</label><select id="ct-arch" name="arch"><option value="amd64">amd64</option><option value="i386">i386</option><option value="arm64">arm64</option></select></div>
+          </div>
+          <div class="form-row">
+            <div class="form-group"><label>自启动</label><label class="toggle"><input type="checkbox" id="ct-autostart"><span class="toggle-slider"></span></label></div>
+            <div class="form-group"><label>排序号</label><input type="number" id="ct-order" value="0" min="0" step="1"></div>
+          </div>
+          <div class="form-row">
+            <div class="form-group"><label>网络模式</label>
+              <select id="ct-network_type">
+                <option value="bridge" selected>桥接（与宿主同网段）</option>
+                <option value="nat">NAT (lxcbr0, 10.0.3.x)</option>
+              </select>
+              <div class="help-text">桥接：容器直接从路由器获取 IPv4/IPv6；NAT：走 10.0.3.x 子网</div>
+            </div>
+            <div class="form-group"></div>
+          </div>
+          <div class="form-row">
+            <div class="form-group"><label>IPv4 地址（留空 = DHCP）</label>
+              <input type="text" id="ct-ipv4" placeholder="192.168.1.100/24">
+              <div class="help-text">带掩码位数，如 192.168.1.100/24</div>
+            </div>
+            <div class="form-group"><label>IPv4 网关（留空 = 不设）</label>
+              <input type="text" id="ct-gateway" placeholder="192.168.1.1">
+            </div>
+          </div>
+          <div class="form-row">
+            <div class="form-group"><label>IPv6 地址（留空 = SLAAC/DHCPv6）</label>
+              <input type="text" id="ct-ipv6" placeholder="2408:8248:7020:6430::100/64">
+            </div>
+            <div class="form-group"><label>IPv6 网关（留空 = 不设）</label>
+              <input type="text" id="ct-ipv6_gw" placeholder="fe80::1">
+            </div>
+          </div>
+          <button type="submit" class="btn btn-primary btn-lg btn-block">创建容器</button>
+        </form>
+      </div>
+
+      <!-- Clone -->
+      <div id="create-clone" class="create-section">
+        <form onsubmit="handleClone(event)">
+          <div class="form-group"><label>源容器</label><select id="clone-source" required><option value="">选择容器...</option></select></div>
+          <div class="form-group"><label>新容器名称</label><input type="text" id="clone-name" required pattern="[a-zA-Z0-9][-a-zA-Z0-9_]*" placeholder="my-clone"></div>
+          <div class="form-group"><label>网络模式</label>
+            <select id="clone-network_type">
+              <option value="nat">NAT (lxcbr0)</option>
+              <option value="bridge">桥接（与宿主同网段）</option>
+            </select>
+            <div class="help-text">桥接：容器直接从路由器获取 IPv4/IPv6</div>
+          </div>
+          <button type="submit" class="btn btn-primary btn-lg btn-block">克隆容器</button>
+        </form>
+      </div>
+
+      <!-- From Snapshot -->
+      <div id="create-snapshot" class="create-section">
+        <form onsubmit="handleCreateFromSnapshot(event)">
+          <div class="form-group"><label>源容器</label><select id="snap-source" required onchange="loadSnapshotList()"><option value="">选择容器...</option></select></div>
+          <div class="form-group"><label>快照</label><select id="snap-select" required><option value="">先选择容器...</option></select></div>
+          <div class="form-group"><label>新容器名称</label><input type="text" id="snap-new-name" required pattern="[a-zA-Z0-9][-a-zA-Z0-9_]*" placeholder="new-from-snapshot"></div>
+          <div class="form-group"><label>网络模式</label>
+            <select id="snap-network_type">
+              <option value="nat">NAT (lxcbr0)</option>
+              <option value="bridge">桥接（与宿主同网段）</option>
+            </select>
+            <div class="help-text">桥接：容器直接从路由器获取 IPv4/IPv6</div>
+          </div>
+          <button type="submit" class="btn btn-primary btn-lg btn-block">从快照创建</button>
+        </form>
+      </div>
+
+      <!-- From Backup -->
+      <div id="create-backup" class="create-section">
+        <form onsubmit="handleCreateFromBackup(event)">
+          <div class="form-group"><label>选择备份文件</label>
+            <select id="backup-select" required><option value="">加载中...</option></select>
+            <div class="help-text" id="backup-info"></div>
+          </div>
+          <div class="form-group"><label>恢复为(新容器名)</label><input type="text" id="backup-new-name" required pattern="[a-zA-Z0-9][-a-zA-Z0-9_.]*" placeholder="restored-container"></div>
+          <div class="form-group"><label>网络模式</label>
+            <select id="backup-network_type">
+              <option value="nat">NAT (lxcbr0)</option>
+              <option value="bridge">桥接（与宿主同网段）</option>
+            </select>
+            <div class="help-text">桥接：容器直接从路由器获取 IPv4/IPv6</div>
+          </div>
+          <button type="submit" class="btn btn-primary btn-lg btn-block">从备份恢复</button>
+        </form>
+      </div>
+
+      <!-- From Local Template (Proxmox-style) -->
+      <div id="create-local" class="create-section active">
+        <form onsubmit="handleCreateFromLocal(event)">
+
+          <h3 class="form-section-title">常规</h3>
+          <div class="form-row">
+            <div class="form-group"><label>容器名称</label><input type="text" id="cl-name" required pattern="[a-zA-Z0-9][-a-zA-Z0-9_]*" placeholder="my-container"></div>
+            <div class="form-group"><label>模板文件</label><select id="cl-template" required><option value="">加载中...</option></select></div>
+          </div>
+          <div class="form-row">
+            <div class="form-group"><label>主机名（留空 = 同容器名）</label><input type="text" id="cl-hostname" placeholder="my-container"></div>
+            <div class="form-group"><label>自启动</label><label class="toggle"><input type="checkbox" id="cl-autostart"><span class="toggle-slider"></span></label></div>
+          </div>
+
+          <h3 class="form-section-title">资源</h3>
+          <div class="form-row">
+            <div class="form-group"><label>内存（MB，留空 = 不限）</label><input type="number" id="cl-memory" min="16" step="16" placeholder="512"></div>
+            <div class="form-group"><label>Swap（MB，留空 = 不限）</label><input type="number" id="cl-swap" min="0" step="16" placeholder="512"></div>
+          </div>
+          <div class="form-row">
+            <div class="form-group"><label>CPU 核心（留空 = 全部）</label><input type="number" id="cl-cores" min="1" step="1" placeholder="1"></div>
+            <div class="form-group"><label>CPU 限制（%，0 = 不限）</label><input type="number" id="cl-cpu-limit" min="0" max="100" step="5" placeholder="0"></div>
+          </div>
+
+          <h3 class="form-section-title">环境变量</h3>
+          <div class="form-row">
+            <div class="form-group" style="grid-column: 1 / -1;">
+              <textarea id="cl-environment" rows="2" placeholder="TZ=Asia/Shanghai&#10;LANG=C.UTF-8" style="width:100%;font-family:ui-monospace,monospace;font-size:12px;"></textarea>
+              <div class="help-text">每行一个 KEY=VALUE，写入 lxc.environment</div>
+            </div>
+          </div>
+
+          <h3 class="form-section-title">网络</h3>
+          <div class="form-row">
+            <div class="form-group"><label>网络模式</label>
+              <select id="cl-network_type" onchange="syncCreateNetworkUI()">
+                <option value="bridge" selected>桥接（与宿主同网段）</option>
+                <option value="nat">NAT (lxcbr0, 10.0.3.x)</option>
+              </select>
+              <div class="help-text">桥接：容器直接从路由器拿地址；NAT：走 10.0.3.x 子网</div>
+            </div>
+            <div class="form-group"><label>MAC 地址（留空 = 自动）</label><input type="text" id="cl-mac" placeholder="00:16:3e:xx:xx:xx"></div>
+          </div>
+          <div class="form-row">
+            <div class="form-group"><label>IPv4 配置</label>
+              <select id="cl-ipv4-mode" onchange="syncCreateNetworkUI()">
+                <option value="dhcp" selected>DHCP（路由器自动分配）</option>
+                <option value="static">静态地址</option>
+              </select>
+            </div>
+            <div class="form-group"><label>IPv4 网关</label><input type="text" id="cl-gateway" placeholder="192.168.1.1"></div>
+          </div>
+          <div class="form-row" id="cl-ipv4-row">
+            <div class="form-group"><label>IPv4 地址</label><input type="text" id="cl-ipv4" placeholder="192.168.1.100/24">
+              <div class="help-text">带掩码位数，如 192.168.1.100/24</div>
+            </div>
+            <div class="form-group"></div>
+          </div>
+          <div class="form-row">
+            <div class="form-group"><label>IPv6 配置</label>
+              <select id="cl-ipv6-mode" onchange="syncCreateNetworkUI()">
+                <option value="slaac" selected>SLAAC / DHCPv6（自动）</option>
+                <option value="static">静态地址</option>
+                <option value="none">禁用</option>
+              </select>
+            </div>
+            <div class="form-group"><label>IPv6 网关</label><input type="text" id="cl-ipv6_gw" placeholder="fe80::1"></div>
+          </div>
+          <div class="form-row" id="cl-ipv6-row">
+            <div class="form-group"><label>IPv6 地址</label><input type="text" id="cl-ipv6" placeholder="2408:8248:7020:6430::100/64"></div>
+            <div class="form-group"></div>
+          </div>
+          <div class="form-row">
+            <div class="form-group"><label>VLAN Tag（留空 = 不打标）</label><input type="number" id="cl-vlan" min="1" max="4094" step="1" placeholder=""></div>
+            <div class="form-group"><label>MTU（留空 = 默认 1500）</label><input type="number" id="cl-mtu" min="576" max="9000" step="1" placeholder="1500"></div>
+          </div>
+
+          <h3 class="form-section-title">DNS</h3>
+          <div class="form-row">
+            <div class="form-group"><label>DNS 域名（可选）</label><input type="text" id="cl-dns-domain" placeholder="lan"></div>
+            <div class="form-group"><label>DNS 服务器（逗号分隔，留空 = 继承）</label><input type="text" id="cl-dns" placeholder="223.5.5.5,119.29.29.29"></div>
+          </div>
+
+          <h3 class="form-section-title">访问</h3>
+          <div class="form-row">
+            <div class="form-group"><label>Root 密码（留空 = 不设置）</label><input type="password" id="cl-root-password" autocomplete="new-password" placeholder="标准 CT 模板建议设置"></div>
+            <div class="form-group"><label>确认密码</label><input type="password" id="cl-root-password2" autocomplete="new-password" placeholder="再输一次"></div>
+          </div>
+          <div class="form-row">
+            <div class="form-group" style="grid-column: 1 / -1;">
+              <label>SSH 公钥（可选，粘贴 id_ed25519.pub 内容）</label>
+              <textarea id="cl-ssh-key" rows="2" placeholder="ssh-ed25519 AAAA... user@host" style="width:100%;font-family:ui-monospace,monospace;font-size:12px;"></textarea>
+              <div class="help-text">写入 /root/.ssh/authorized_keys，并放开 sshd 的 PermitRootLogin</div>
+              <div style="margin-top:6px;">
+                <input type="file" id="cl-ssh-key-file" accept=".pub,text/plain" style="display:none" onchange="loadSshKeyFile(this)">
+                <button type="button" class="btn btn-secondary btn-sm" onclick="document.getElementById('cl-ssh-key-file').click()">加载 SSH 公钥文件</button>
+              </div>
+            </div>
+          </div>
+
+          <button type="submit" class="btn btn-primary btn-lg btn-block">从本地模板创建</button>
+        </form>
+      </div>
+    </section>
+
+    <!-- Tab: Templates -->
+    <section id="tab-templates" class="tab-content">
+      <p class="info-text">从 TUNA Proxmox 镜像源获取模板，下载后平铺存储在本地模板目录。</p>
+      <div id="cache-section" class="cache-section">
+        <div class="section-header">
+          <h3>已下载的本地模板</h3>
+          <div class="cache-actions">
+            <button class="btn btn-sm btn-secondary" onclick="loadCachedTemplates()">🔄 刷新</button>
+          </div>
+        </div>
+        <div id="cache-loading" class="loading-state" style="display:none"><div class="spinner"></div><p>加载中...</p></div>
+        <div id="cache-list" class="template-grid"></div>
+      </div>
+      <div id="proxmox-section" class="cache-section">
+        <div class="section-header"><h3>Proxmox 模板源</h3>
+          <div class="cache-actions">
+            <button class="btn btn-sm btn-secondary" onclick="loadProxmoxTemplates()">🔄 刷新</button>
+          </div>
+        </div>
+        <div id="proxmox-loading" class="loading-state"><div class="spinner"></div><p>加载模板列表...</p></div>
+        <div id="proxmox-grid" class="template-grid"></div>
+      </div>
+    </section>
+
+    <!-- Tab: Settings -->
+    <section id="tab-settings" class="tab-content">
+      <h2>设置</h2>
+      <div id="settings-loading" class="loading-state"><div class="spinner"></div><p>加载设置...</p></div>
+      <form id="settings-form" onsubmit="handleSaveSettings(event)" style="display:none;width:100%">
+        <div class="settings-section">
+          <h3>存储</h3>
+          <div class="settings-grid">
+            <div class="form-group span-2" id="stg-zfs-pool-group">
+              <label>存储卷（btrfs）</label>
+              <select id="stg-zfs-pool">
+                <option value="">— 加载中…—</option>
+              </select>
+              <div class="help-text">选择容器数据所在的 btrfs 存储卷；快照/克隆/备份依赖 btrfs 子卷</div>
+            </div>
+            <div class="form-group">
+              <label>LXC 容器路径</label>
+              <input type="text" id="stg-path" readonly style="color:var(--text-secondary);background:var(--bg-elevated);border:1px solid var(--border);cursor:default;">
+              <div class="help-text" id="stg-path-hint">基于存储池自动生成，不可修改</div>
+            </div>
+            <div class="form-group">
+              <label>备份路径</label>
+              <input type="text" id="stg-backup-path" placeholder="/vol1/1000/bak">
+            </div>
+            <div class="form-group">
+              <label>本地模板路径</label>
+              <input type="text" id="stg-cache" placeholder="/vol1/1000/template">
+              <div class="help-text">Proxmox 模板下载后存放的目录</div>
+            </div>
+          </div>
+        </div>
+        <div class="settings-section">
+          <h3>镜像源</h3>
+          <div class="form-group"><label>LXC 镜像源</label><input type="text" id="stg-lxc-mirror" placeholder="https://mirrors.tuna.tsinghua.edu.cn/lxc-images"></div>
+        </div>
+        <div class="settings-section">
+          <h3>备份</h3>
+          <div class="form-row">
+            <div class="form-group"><label>保留份数</label><input type="number" id="stg-backup-keep" value="7" min="1" max="99"></div>
+            <div class="form-group"><label>压缩级别</label><input type="number" id="stg-backup-compression" value="6" min="0" max="9"></div>
+            <div class="form-group"><label>线程数</label><input type="number" id="stg-backup-threads" value="4" min="1" max="16"></div>
+            <div class="form-group"><label>快照备份</label><label class="toggle" style="margin-top:4px;"><input type="checkbox" id="stg-backup-snapshot"><span class="toggle-slider"></span></label></div>
+          </div>
+        </div>
+        <div style="display:flex;gap:12px;justify-content:center;margin-top:20px;">
+          <button type="submit" class="btn btn-primary btn-lg" style="flex:1;max-width:300px;justify-content:center;">保存设置</button>
+          <button class="btn btn-danger btn-lg" onclick="factoryReset()" style="flex:1;max-width:300px;justify-content:center;">恢复出厂设置</button>
+        </div>
+        <div style="text-align:center;margin-top:12px;">
+          <div style="color:var(--text-dim);font-size:12px;">恢复出厂设置将删除所有配置，重新加载后将进入首次运行向导</div>
+        </div>
+      </form>
+    </section>
+
+    <!-- Tab: Logs -->
+    <section id="tab-logs" class="tab-content log-tab">
+      <div id="log-loading" style="text-align:center;padding:20px;"><div class="spinner"></div> 加载日志...</div>
+      <pre id="log-content" class="log-pre" style="display:none;"></pre>
+    </section>
+
+  </main>
+</div>
+
+<!-- Modals -->
+<div id="container-modal" class="modal" onclick="if(event.target===this)closeModal()">
+  <div class="modal-content" id="modal-content"></div>
+</div>
+<div id="confirm-modal" class="modal" onclick="if(event.target===this)closeConfirm()">
+  <div class="modal-content" style="max-width:420px;">
+    <div id="confirm-content">
+      <p id="confirm-message"></p>
+      <div class="form-actions" style="margin-top:16px;gap:8px;">
+        <button class="btn btn-secondary" onclick="closeConfirm()">取消</button>
+        <button id="confirm-btn" class="btn btn-danger" onclick="confirmAction()">确定</button>
+      </div>
+    </div>
+  </div>
+</div>
+<div id="prompt-modal" class="modal" onclick="if(event.target===this)closePrompt()">
+  <div class="modal-content" style="max-width:420px;">
+    <div id="prompt-content">
+      <h4 id="prompt-title"></h4>
+      <p id="prompt-message" style="margin:8px 0;"></p>
+      <input type="text" id="prompt-input" class="form-input" placeholder="" style="width:100%;box-sizing:border-box;">
+      <div class="form-actions" style="margin-top:12px;gap:8px;">
+        <button class="btn btn-secondary" onclick="closePrompt()">取消</button>
+        <button class="btn btn-primary" onclick="promptConfirm()">确定</button>
+      </div>
+    </div>
+  </div>
+</div>
+<div id="toast-container" class="toast-container"></div>
+
+<!-- Setup Wizard Overlay -->
+<div id="setup-wizard" class="modal" style="z-index:2000;" onclick="if(event.target===this)return">
+  <div class="modal-content" style="max-width:560px;">
+    <div style="text-align:center;margin-bottom:16px;">
+      <img src="/app/lxcmanager/assets/ICON-64.PNG" alt="FnLxc" style="width:48px;height:48px;">
+      <h2 style="margin:8px 0 4px;">欢迎使用 FnLxc</h2>
+      <p style="color:var(--text-dim);font-size:14px;">首次使用，请先完成基础设置</p>
+    </div>
+    <form id="wizard-form" onsubmit="handleSaveWizardSettings(event)">
+      <div class="settings-section">
+        <h4>存储配置</h4>
+        <div class="settings-grid">
+          <div class="form-group span-2">
+            <label>存储卷（btrfs）</label>
+            <select id="wiz-zfs-pool" onchange="handleWizardPoolChange()">
+              <option value="">— 加载中…—</option>
+            </select>
+            <div class="help-text">选择容器数据所在的 btrfs 存储卷；快照/克隆/备份依赖 btrfs 子卷</div>
+          </div>
+          <div class="form-group">
+            <label>LXC 容器路径</label>
+            <input type="text" id="wiz-path" placeholder="/vol1/1000/lxc" readonly style="color:var(--text-secondary);background:var(--bg-elevated);border:1px solid var(--border);cursor:default;">
+            <div class="help-text">基于存储池自动生成，不可修改</div>
+          </div>
+          <div class="form-group">
+            <label>备份路径</label>
+            <input type="text" id="wiz-backup-path" placeholder="/vol1/1000/bak">
+          </div>
+          <div class="form-group">
+            <label>本地模板路径</label>
+            <input type="text" id="wiz-cache" placeholder="/vol1/1000/template">
+            <div class="help-text">Proxmox 模板下载后存放的目录</div>
+          </div>
+        </div>
+      </div>
+      <div class="settings-section">
+        <h4>镜像源</h4>
+        <div class="form-group">
+          <label>LXC 镜像源</label>
+          <input type="text" id="wiz-lxc-mirror" placeholder="https://mirrors.tuna.tsinghua.edu.cn/lxc-images">
+        </div>
+      </div>
+      <button type="submit" class="btn btn-primary btn-lg btn-block" id="wiz-save-btn">保存并开始使用</button>
+    </form>
+  </div>
+</div>
+
+<div id="terminal-modal" class="modal" onclick="if(event.target===this)closeTerminal()">
+  <div class="modal-content terminal-modal-content">
+    <div class="terminal-header" style="display:flex;align-items:center;gap:8px;">
+      <span id="terminal-title">终端</span>
+      <div style="display:flex;gap:6px;">
+        <button id="term-mode-pty" class="btn btn-sm btn-primary" onclick="switchTermMode('pty')">终端</button>
+        <button id="term-mode-exec" class="btn btn-sm" onclick="switchTermMode('exec')">命令</button>
+      </div>
+      <button class="btn btn-sm btn-ghost" style="margin-left:auto;" onclick="closeTerminal()">✕</button>
+    </div>
+    <div class="terminal-output-wrap">
+      <div id="terminal-container" style="height:500px;display:none;"></div>
+      <div id="webshell-container" style="height:500px;display:none;padding:12px;background:#0d1117;color:#c9d1d9;font-family:Menlo,monospace;font-size:13px;">
+        <div id="webshell-output" style="white-space:pre-wrap;min-height:350px;"></div>
+        <div style="display:flex;gap:8px;margin-top:8px;">
+          <input id="webshell-cmd" type="text" placeholder="输入命令后回车执行，如: ls /" style="flex:1;background:#161b22;color:#c9d1d9;border:1px solid #30363d;border-radius:4px;padding:6px 10px;font-family:Menlo,monospace;font-size:13px;" onkeydown="if(event.key==='Enter')execCommand()">
+          <button class="btn btn-sm btn-primary" onclick="execCommand()">执行</button>
+        </div>
+      </div>
+    </div>
+  </div>
+</div>
+
+<script src="/app/lxcmanager/app.js?v=131"></script>
+</body>
+</html>

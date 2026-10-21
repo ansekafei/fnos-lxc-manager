@@ -1,0 +1,14 @@
+__pycache__/
+*.pyc
+*.py.full
+*.py.cleaned
+app.tgz
+dist/
+server/__pycache__/
+.tools/
+.build/
+.build-fnpack/
+*.orig
+改造说明-btrfs.md
+app/
+server/__pycache__/

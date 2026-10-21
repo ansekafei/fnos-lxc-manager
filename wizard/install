@@ -1,0 +1,11 @@
+[
+    {
+        "stepTitle": "欢迎使用 FnLxc",
+        "items": [
+            {
+                "type": "tips",
+                "helpText": "FnLxc 将自动检查并安装 LXC 系统组件（lxc、lxc-templates、lxcfs），配置网络桥接和 NAT 转发。存储和网络设置可在安装后进入设置页面进行配置。"
+            }
+        ]
+    }
+]
