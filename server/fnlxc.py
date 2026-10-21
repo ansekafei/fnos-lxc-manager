@@ -2770,6 +2770,13 @@ if HAS_AIOHTTP:
                             break
                     except Exception:
                         continue
+                # 兜底：确认真的停了，否则删掉 rootfs 后进程会变成孤儿
+                try:
+                    _st = await async_run_lxc("info", ["-n", name, "-s"], timeout=10)
+                    if "STOPPED" not in (_st.get("stdout") or ""):
+                        await async_run_lxc("stop", ["-n", name, "-k"], timeout=20)
+                except Exception:
+                    pass
                 # 删除快照子卷
                 if dataset and ZFS_POOL:
                     snaps = zfs_list_snapshots(dataset, ZFS_POOL)
