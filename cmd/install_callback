@@ -376,6 +376,26 @@ done
 # ── LXC 系统组件（install_init 阶段限时，安装动作放在这里做）──
 install_lxc_packages || install_log "警告: LXC 组件安装不完整，可稍后手动执行 apt install lxc lxc-templates lxcfs bridge-utils"
 
+# ── 无特权容器前置：给 root 分配 subuid/subgid 映射段 ──────────
+# 无特权容器把容器内 uid 0 映射到宿主的 100000 起，LXC 需要 /etc/subuid 与
+# /etc/subgid 里有 root 的一段。飞牛默认只给普通用户分配，root 没有。
+ensure_root_subid()
+{
+    local f start
+    for f in /etc/subuid /etc/subgid; do
+        [ -f "$f" ] || : > "$f"
+        if grep -q '^root:' "$f" 2>/dev/null; then
+            continue
+        fi
+        # 取现有分配里最大的结束位置，往后接一段，避免与已有范围重叠
+        start=$(awk -F: 'BEGIN{m=100000} NF>=3 {e=$2+$3; if(e>m) m=e} END{print m}' "$f" 2>/dev/null)
+        [ -z "$start" ] && start=100000
+        echo "root:${start}:65536" >> "$f"
+        install_log "已为 root 分配 subid 段 ${start}:65536 → ${f}"
+    done
+}
+ensure_root_subid
+
 # ── Python 依赖 ────────────────────────────────────
 install_log "安装 Python 依赖..."
 PYTHON_PKGS="python3-pip python3-aiohttp python3-pil python3-serial"

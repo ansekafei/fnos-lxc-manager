@@ -699,6 +699,9 @@ async function renderDetailInfo(body) {
         <tr><td>状态</td><td><span class="container-status ${stateClass(c.state)}"><span class="status-dot"></span>${fmtState(c.state)}</span></td></tr>
         <tr><td>PID</td><td>${c.pid || '-'}</td></tr>
         <tr><td>存储后端</td><td><span class="backend-badge backend-zfs">${c.backend_type === 'dir' ? 'DIR' : 'btrfs'}</span>${c.zfs_dataset ? ` · <code>${esc(c.zfs_dataset)}</code>` : ''}</td></tr>
+        <tr><td>权限模式</td><td>${c.privileged
+          ? '<span class="badge">特权</span> <span style="color:var(--text-dim);font-size:12px">容器内 root = 宿主 root</span>'
+          : '<span class="badge" style="background:#2ea043">无特权</span> <span style="color:var(--text-dim);font-size:12px">容器 uid 映射到宿主 100000 起</span>'}</td></tr>
         <tr><td>IP 地址</td><td>${c.ip && c.ip.length ? c.ip.join(', ') : '-'}</td></tr>
         <tr><td>系统</td><td>${c.os || '-'} ${c.release || ''}</td></tr>
         <tr><td>架构</td><td>${c.arch || '-'}</td></tr>
@@ -1963,6 +1966,7 @@ async function handleCreateFromLocal(e) {
     environment: val('cl-environment') || null,
     hostname: val('cl-hostname') || null,
     network_type: netType,
+    unprivileged: !!(document.getElementById('cl-unprivileged') || {}).checked,
     ipv4_mode: v4mode,
     ipv6_mode: v6mode,
     ipv4_address: ipv4 || null,

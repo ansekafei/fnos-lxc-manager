@@ -203,6 +203,14 @@
             <div class="form-group"><label>主机名（留空 = 同容器名）</label><input type="text" id="cl-hostname" placeholder="my-container"></div>
             <div class="form-group"><label>自启动</label><label class="toggle"><input type="checkbox" id="cl-autostart"><span class="toggle-slider"></span></label></div>
           </div>
+          <div class="form-row">
+            <div class="form-group">
+              <label>无特权容器</label>
+              <label class="toggle"><input type="checkbox" id="cl-unprivileged"><span class="toggle-slider"></span></label>
+              <div class="help-text">开启后容器内 root 映射到宿主 100000 起，AppArmor 收紧、不放开设备。代价：不能 bind 1024 以下端口、不能改系统时间，Docker in LXC 之类跑不了。创建后不可更改。</div>
+            </div>
+            <div class="form-group"></div>
+          </div>
 
           <h3 class="form-section-title">资源</h3>
           <div class="form-row">

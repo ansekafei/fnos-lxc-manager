@@ -1637,15 +1637,20 @@ def get_container_info(name):
                     snap_count += 1
     info["snapshots"] = snap_count
 
-    # MAC：从 config 读真实值，前端元数据页据此回填
+    # MAC 与权限模式：从 config 读真实值，前端元数据页据此回填
+    info["privileged"] = True
     try:
         _cfg = get_container_config_path(name)
         if os.path.isfile(_cfg):
             with open(_cfg) as _f:
+                _has_idmap = False
                 for _line in _f:
-                    if _line.strip().startswith("lxc.net.0.hwaddr"):
-                        info["mac"] = _line.split("=", 1)[1].strip()
-                        break
+                    _t = _line.strip()
+                    if _t.startswith("lxc.net.0.hwaddr"):
+                        info["mac"] = _t.split("=", 1)[1].strip()
+                    elif _t.startswith("lxc.idmap"):
+                        _has_idmap = True
+                info["privileged"] = not _has_idmap
     except Exception:
         pass
 
@@ -1880,6 +1885,20 @@ def is_ovs_bridge(iface):
         return r.returncode == 0
     except Exception:
         return False
+
+
+def root_subid_start():
+    """读 /etc/subuid 里 root 的映射起点；飞牛默认不给 root 分配，安装时由
+    cmd/install_callback 的 ensure_root_subid 补上。取不到时退回 100000。"""
+    try:
+        with open("/etc/subuid", encoding="utf-8") as f:
+            for line in f:
+                parts = line.strip().split(":")
+                if len(parts) >= 3 and parts[0] == "root":
+                    return int(parts[1])
+    except Exception:
+        pass
+    return 100000
 
 
 def _net_params_from_body(body):
@@ -4004,6 +4023,18 @@ if HAS_AIOHTTP:
                     with tarfile.open(template_path, "r:*") as tar:
                         tar.extractall(path=zfs_mount)
 
+                # 3b. 无特权容器：把 rootfs 整体映射到宿主 100000 起
+                _unpriv = bool(body.get("unprivileged"))
+                _subid = root_subid_start() if _unpriv else 0
+                if _unpriv:
+                    _r = subprocess.run(
+                        ["chown", "-R", f"{_subid}:{_subid}", zfs_mount],
+                        capture_output=True, text=True, timeout=600
+                    )
+                    if _r.returncode != 0:
+                        zfs_destroy_dataset(dataset, recursive=True)
+                        return {"ok": False, "msg": f"设置无特权容器的 rootfs 属主失败: {_r.stderr[:200]}"}
+
                 # 4. 写入 LXC config（dir 后端指向子卷）
                 # 网络部分统一交给 write_container_network_config_by_type 处理，
                 # 避免这里再拼一份 macvlan/veth 逻辑（早期两处不一致导致桥接不通）。
@@ -4054,11 +4085,20 @@ if HAS_AIOHTTP:
                     f"lxc.start.auto = {'1' if autostart else '0'}\n"
                     "lxc.start.delay = 2\n"
                     "lxc.tty.max = 1\n"
-                    "lxc.apparmor.profile = unconfined\n"
-                    "lxc.apparmor.allow_nesting = 1\n"
-                    "lxc.mount.auto = proc:mixed sys:mixed cgroup:mixed\n"
-                    "lxc.cgroup.devices.allow = a\n"
-                    "lxc.environment = PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin\n"
+                    + (
+                        # 无特权容器：uid/gid 映射到宿主 100000 起，AppArmor 收紧，不放开设备
+                        f"lxc.idmap = u 0 {_subid} 65536\n"
+                        f"lxc.idmap = g 0 {_subid} 65536\n"
+                        "lxc.mount.auto = proc:rw sys:ro cgroup:rw\n"
+                        "lxc.apparmor.profile = lxc-container-default-cgns\n"
+                        if _unpriv else
+                        # 特权容器：容器内 root = 宿主 root
+                        "lxc.apparmor.profile = unconfined\n"
+                        "lxc.apparmor.allow_nesting = 1\n"
+                        "lxc.mount.auto = proc:mixed sys:mixed cgroup:mixed\n"
+                        "lxc.cgroup.devices.allow = a\n"
+                    )
+                    + "lxc.environment = PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin\n"
                     f"{_env_lines}"
                     f"{res_lines}"
                 )

@@ -1,5 +1,5 @@
 appname               = lxcmanager
-version = 2.4.0
+version = 2.5.0
 display_name          = LXC 容器管理
 desc                  = 飞牛 fnOS LXC 容器管理系统（btrfs 子卷版，无需 ZFS）：容器创建、启停、配置、快照、备份。
 platform              = x86
