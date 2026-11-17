@@ -5,7 +5,7 @@
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 
 ################################################################################
-# FnLxc 公共函数库
+# LXC 容器管理 公共函数库
 # 包含安装、卸载、升级过程中使用的公共函数
 ################################################################################
 
@@ -179,8 +179,14 @@ clean_all_data()
     #   @appdata    → 运行时数据（PKGVAR）
     #   @appconf    → 配置文件（TRIM_PKGETC）
     # 三种路径都要清理干净
+    # 新目录（lxcmanager）为主，旧版 fnlxc 目录一并清理，避免残留。
     for _dir in \
-        "${TRIM_APPDEST:-/var/apps/fnlxc}" \
+        "${TRIM_APPDEST:-/var/apps/lxcmanager}" \
+        "/var/apps/lxcmanager" \
+        "/usr/local/apps/@appcenter/lxcmanager" \
+        "/usr/local/apps/@appdata/lxcmanager" \
+        "/usr/local/apps/@appconf/lxcmanager" \
+        "/var/apps/fnlxc" \
         "/usr/local/apps/@appcenter/fnlxc" \
         "/usr/local/apps/@appdata/fnlxc" \
         "/usr/local/apps/@appconf/fnlxc" \
@@ -291,7 +297,7 @@ patch_lxc_download_template()
 # ============================================================================
 setup_sysctl()
 {
-    local conf="/etc/sysctl.d/99-fnlxc.conf"
+    local conf="/etc/sysctl.d/99-lxcmanager.conf"
     local need_restart=false
 
     for param in "net.ipv4.ip_forward=1" \

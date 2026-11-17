@@ -14,6 +14,7 @@
     FNLXC_TIMEOUT  单次请求超时秒数（默认 120）
 """
 
+import glob
 import json
 import os
 import socket
@@ -27,34 +28,43 @@ SERVER_VERSION = "1.0.0"
 
 SOCKET_CANDIDATES = [
     os.environ.get("FNLXC_SOCKET", ""),
+    # 当前命名（lxcmanager）
+    "/var/apps/lxcmanager/lxcmanager.sock",
+    "/var/apps/lxcmanager/target/lxcmanager.sock",
+    "/usr/local/apps/@appcenter/lxcmanager/lxcmanager.sock",
+    "/usr/local/apps/@appdata/lxcmanager/lxcmanager.sock",
+    "/vol1/@appcenter/lxcmanager/lxcmanager.sock",
+    "/vol1/@appdata/lxcmanager/lxcmanager.sock",
+    # 旧版命名（fnlxc），仅作兼容回退
     "/var/apps/fnlxc/fnlxc.sock",
+    "/var/apps/fnlxc/target/fnlxc.sock",
     "/usr/local/apps/@appdata/fnlxc/fnlxc.sock",
     "/usr/local/apps/@appcenter/fnlxc/fnlxc.sock",
+    "/vol1/@appcenter/fnlxc/fnlxc.sock",
     "/vol1/@appdata/fnlxc/fnlxc.sock",
     "/var/lib/fnlxc/fnlxc.sock",
 ]
 
+# 按卷号通配补充（应用数据卷可能是 vol1/vol2/...，不写死卷号）
+SOCKET_GLOBS = [
+    "/vol*/@appcenter/lxcmanager/lxcmanager.sock",
+    "/vol*/@appcenter/lxcmanager/target/lxcmanager.sock",
+    "/vol*/@appdata/lxcmanager/lxcmanager.sock",
+    "/vol*/@appcenter/fnlxc/fnlxc.sock",
+    "/vol*/@appdata/fnlxc/fnlxc.sock",
+]
+
 DEFAULT_TIMEOUT = int(os.environ.get("FNLXC_TIMEOUT", "120"))
-
-
-# ── 后端通信 ────────────────────────────────────────────────────────────
-
-class UnixHTTPConnection(http.client.HTTPConnection):
-    def __init__(self, socket_path, timeout=DEFAULT_TIMEOUT):
-        super().__init__("localhost", timeout=timeout)
-        self.socket_path = socket_path
-
-    def connect(self):
-        sock = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
-        sock.settimeout(self.timeout)
-        sock.connect(self.socket_path)
-        self.sock = sock
 
 
 def find_socket():
     for path in SOCKET_CANDIDATES:
         if path and os.path.exists(path):
             return path
+    for pattern in SOCKET_GLOBS:
+        for path in sorted(glob.glob(pattern)):
+            if os.path.exists(path):
+                return path
     return None
 
 

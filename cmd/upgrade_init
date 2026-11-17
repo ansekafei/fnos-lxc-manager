@@ -7,7 +7,7 @@
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 
 ################################################################################
-# FnLxc 公共函数库
+# LXC 容器管理 公共函数库
 # 包含安装、卸载、升级过程中使用的公共函数
 ################################################################################
 
@@ -181,8 +181,14 @@ clean_all_data()
     #   @appdata    → 运行时数据（PKGVAR）
     #   @appconf    → 配置文件（TRIM_PKGETC）
     # 三种路径都要清理干净
+    # 新目录（lxcmanager）为主，旧版 fnlxc 目录一并清理，避免残留。
     for _dir in \
-        "${TRIM_APPDEST:-/var/apps/fnlxc}" \
+        "${TRIM_APPDEST:-/var/apps/lxcmanager}" \
+        "/var/apps/lxcmanager" \
+        "/usr/local/apps/@appcenter/lxcmanager" \
+        "/usr/local/apps/@appdata/lxcmanager" \
+        "/usr/local/apps/@appconf/lxcmanager" \
+        "/var/apps/fnlxc" \
         "/usr/local/apps/@appcenter/fnlxc" \
         "/usr/local/apps/@appdata/fnlxc" \
         "/usr/local/apps/@appconf/fnlxc" \
@@ -293,7 +299,7 @@ patch_lxc_download_template()
 # ============================================================================
 setup_sysctl()
 {
-    local conf="/etc/sysctl.d/99-fnlxc.conf"
+    local conf="/etc/sysctl.d/99-lxcmanager.conf"
     local need_restart=false
 
     for param in "net.ipv4.ip_forward=1" \
@@ -327,7 +333,7 @@ SYSCTL_EOF
 # install_init / upgrade_init 在文件复制之前执行，这里把执行位补回来。
 fix_package_dir_perms()
 {
-    local n="${TRIM_APPNAME:-fnlxc}"
+    local n="${TRIM_APPNAME:-lxcmanager}"
     local d
     for d in /vol*/appcenter-downloads/"${n}"-*-tpk; do
         [ -d "$d" ] || continue
@@ -357,9 +363,13 @@ _wait_gone 'python.*fnlxc\.py'
 install_log "已停止 FnLxc 后端进程"
 
 # 2) 清理残留 socket（否则新版启动时 bind 会失败）
-for _s in "${TRIM_APPDEST}/fnlxc.sock" \
-          "/var/apps/${TRIM_APPNAME:-fnlxc}/fnlxc.sock" \
-          "/var/apps/${TRIM_APPNAME:-fnlxc}/target/fnlxc.sock"; do
+#    包含当前 lxcmanager.sock 与旧版 fnlxc.sock，避免旧 socket 残留占位。
+for _s in "${TRIM_APPDEST}/lxcmanager.sock" \
+          "/var/apps/${TRIM_APPNAME:-lxcmanager}/lxcmanager.sock" \
+          "/var/apps/lxcmanager/lxcmanager.sock" \
+          "${TRIM_APPDEST}/fnlxc.sock" \
+          "/var/apps/${TRIM_APPNAME:-lxcmanager}/fnlxc.sock" \
+          "/var/apps/fnlxc/fnlxc.sock"; do
     [ -e "$_s" ] && rm -f "$_s" 2>/dev/null || true
 done
 rm -f "${PID_FILE}" 2>/dev/null || true

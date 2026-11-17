@@ -8,45 +8,62 @@ AI开发构建的飞牛 fnOS 上的 LXC 容器图形化管理应用。容器生�
 ## 目录结构
 
 ```
-fnos-lxc/
-├── build.sh                  # 构建脚本，打包 .fpk 安装包
-├── manifest                  # 应用元数据（名称/版本/依赖）
+fnos-lxc-manager/
+├── build.sh                  # 构建脚本（读 manifest 生成 app.tgz/checksum，打包 .fpk）
+├── build-fnpack.sh           # 官方 fnpack 打包脚本（结构对齐 developer.fnnas.com）
+├── manifest                  # 应用元数据（appname=lxcmanager / version）
 ├── ui/
 │   ├── index.html            # 单页应用入口
-│   ├── app.js                # 前端逻辑（1980行）
-│   ├── style.css             # 深色主题样式（823行）
-│   └── config                # 前端配置（默认设置）
+│   ├── app.js                # 前端逻辑（约 2100 行）
+│   ├── style.css             # 深色主题样式（约 1300 行）
+│   └── config                # 前端配置（gatewaySocket / 桌面入口）
 ├── server/
-│   └── fnlxc.py              # Python aiohttp 后端（4349行）
-├── wizard/                 # 安装向导
-│   ├── install             # 安装向导（欢迎页）
-│   ├── config              # 配置向导（路径/网络）
-│   └── uninstall           # 卸载确认向导
-├── config/
-│   ├── privilege           # 运行权限声明
-│   └── resource            # 路径/设备资源声明
-├── cmd/
-│   ├── main                # 服务管理器（启动/停止/重启）
-│   ├── common              # 公共函数库
-│   ├── install_init        # 安装前检查（检测 LXC、sysctl）
-│   ├── install_callback    # 安装后初始化（创建用户、sudoers、路径镜像源）
-│   ├── config_init         # 配置向导入口
-│   ├── config_callback     # 配置保存回调
-│   ├── upgrade_init        # 升级前检查
-│   ├── upgrade_callback    # 升级后处理
-│   ├── uninstall_init      # 卸载确认向导
-│   ├── uninstall_callback  # 卸载清理（可选删除LXC/数据）
-│   ├── lxc-autosnapshot    # 自动快照任务
-│   └── lxc-fetch           # 镜像下载脚本（预下载/列表/删除）
+│   ├── fnlxc.py              # Python aiohttp 后端（约 4800 行）
+│   └── fnlxc_server          # 后端启动包装脚本
+├── mcp/
+│   └── fnlxc_mcp.py          # 零依赖 stdio MCP Server（14 个工具）
 ├── templates/
-│   └── lxc-local           # 本地模板（从缓存 rootfs.tar.xz 创建）
-├── ICON.PNG                # 应用图标
-├── ICON_256.PNG            # 高清图标
-├── LICENSE                 # MIT 许可证
-└── manifest                # 应用元数据（名称/版本/依赖）
+│   └── lxc-local             # 本地模板（从缓存 rootfs.tar.xz 创建）
+├── wizard/                   # 安装/卸载向导
+│   ├── install
+│   └── uninstall
+├── config/
+│   ├── privilege             # 运行权限声明
+│   └── resource              # 路径/设备资源声明
+├── cmd/                      # 应用中心钩子（只有 9 个标准钩子）
+│   ├── main                  # 服务管理器（启动/停止/重启/查询）
+│   ├── install_init          # 安装前检查（LXC 检测、sysctl）
+│   ├── install_callback      # 安装后初始化（用户、sudoers、模板、向导）
+│   ├── config_init           # 配置页入口
+│   ├── config_callback       # 配置保存回调
+│   ├── upgrade_init          # 升级前清理（停进程、清 socket）
+│   ├── upgrade_callback      # 升级后处理
+│   ├── uninstall_init        # 卸载确认向导
+│   └── uninstall_callback    # 卸载清理（可选删除 LXC / 数据）
+├── scripts/
+│   └── update.sh             # 本地第三方包升级辅助脚本（绕过应用中心限制）
+├── docs/
+│   └── 与原版的差异.md
+├── ICON.PNG / ICON_256.PNG   # 应用图标
+├── LICENSE                   # MIT
+├── PLAN.md / API_DESIGN.md   # 设计与接口文档
+└── README.md
 ```
 
 ---
+
+## 版本与标识约定
+
+| 项 | 取值 | 说明 |
+|---|---|---|
+| 应用标识 `appname` | `lxcmanager` | `manifest`、`ui/config`、桌面入口 `lxcmanager.Application` 统一 |
+| 应用版本 | `3.1.9` | 以 `manifest` 的 `version` 与后端 `APP_VERSION` 为准，两处必须同步修改 |
+| 后端 socket | `lxcmanager.sock` | 主程序、`cmd/main`、`server/fnlxc_server`、MCP 探测一致 |
+| 网关前缀 | `/app/lxcmanager/api/...` | 前端 `API` 常量与后端路由注册一致 |
+| 兼容项 | `fnlxc` / `fnlxc.sock` / `/var/apps/fnlxc` | 仅作为旧版本回退与残留清理保留，不作为新默认 |
+
+> 历史命名：仓库名、后端文件名（`server/fnlxc.py`、`mcp/fnlxc_mcp.py`）沿用 `fnlxc` 是为了兼容既有部署与 MCP 工具名，内部实现与对外标识已统一到 `lxcmanager`。
+> 升级时请同时更新 `manifest` 的 `version` 与 `server/fnlxc.py` 的 `APP_VERSION`，否则应用中心显示的版本与 `/api/health` 返回的版本会不一致。
 
 ## 功能模块
 
@@ -67,13 +84,16 @@ fnos-lxc/
 - **配置**：LXC 配置文件在线编辑
 - **快照**：创建快照、恢复快照、删除快照、从快照克隆
 - **备份**：创建备份、恢复备份、删除备份
-- **网络**：查看/修改网络类型（bridge/veth/none）
+- **网络**：查看/修改网络类型（bridge / NAT / OVS / none）、静态 IP、网关、DNS、VLAN、MTU
 
-### 创建容器（4种方式）
+### 创建容器（5种来源）
 1. **模板创建**：选择发行版（debian/ubuntu/alpine/centos/gentoo/gentoo-current）→ 选版本 → 选架构（amd64/i386/arm64）→ 下载镜像 → 创建
-2. **克隆**：从现有容器克隆
-3. **从快照恢复**：从已有快照创建新容器
-4. **从备份恢复**：从 .tar.zst 备份恢复
+2. **本地/已缓存镜像创建**：直接使用本地缓存或上传的 rootfs
+3. **克隆**：从现有容器克隆（btrfs CoW）
+4. **从快照创建**：从已有快照创建新容器
+5. **从备份恢复**：从 `.zfs.xz` 备份恢复（历史后缀，内容是 btrfs send 流）
+
+此外还支持从 **Proxmox 模板清单**（`/api/templates/proxmox`）下载后创建。
 
 ### 模板页面
 - **系统模板**：从清华镜像源 `https://mirrors.tuna.tsinghua.edu.cn/lxc-images` 获取 lxc-download 支持的发行版列表
@@ -102,8 +122,8 @@ fnos-lxc/
 - 导航栏 sticky 固定（滚动时不动）
 
 ### 后端
-- **Python aiohttp** + Unix Domain Socket （`/var/apps/fnlxc/fnlxc.sock`）
-- 由 `TRIM_SERVICE_SOCKET` 环境变量决定 socket 路径
+- **Python aiohttp** + Unix Domain Socket （默认 `/var/apps/lxcmanager/lxcmanager.sock`）
+- socket 名固定为 `lxcmanager.sock`，完整路径由 `TRIM_SERVICE_SOCKET` 环境变量决定（未设置时回退到安装目录）
 - 所有 LXC 操作通过 `lxc-*` 命令行工具调用
 - LXC 缓存镜像：`/var/cache/lxc/download/`
 
@@ -111,7 +131,7 @@ fnos-lxc/
 - 使用系统 `lxc-download` 模板（已 patch）连接清华镜像源
 - 支持 nesting 和 lxc-sshd 容器
 - 快照命名：`snap0`, `snap1`, ... （lxc-snapshot 自动生成）
-- 备份格式：`.tar.zst`
+- 备份格式：`<时间戳>_<容器名>.zfs.xz`（`btrfs send | xz`，后缀沿用历史命名）
 
 ### 安全模型
 - **降权运行**：后端进程以专用 `lxc` 系统用户运行，非 root
@@ -123,39 +143,74 @@ fnos-lxc/
 
 ## API 参考
 
+所有路由同时注册两份：裸路径 `/api/...` 与网关前缀 `/app/lxcmanager/api/...`。前端统一走后者。
+
+### 容器
 | 方法 | 路径 | 说明 |
 |------|------|------|
-| GET | `/api/lxc/list` | 容器列表 |
-| GET | `/api/lxc/{name}/info` | 容器详细信息 |
-| POST | `/api/lxc/{name}/{action}` | start/stop/restart/freeze/unfreeze/kill |
-| DELETE | `/api/lxc/{name}` | 删除容器 |
-| GET | `/api/lxc/{name}/config` | 配置文件 |
-| PUT | `/api/lxc/{name}/config` | 更新配置 |
+| GET | `/api/lxc/list` | 容器列表（含动态统计） |
+| GET | `/api/lxc/{name}` | 容器详情 |
+| GET | `/api/lxc/{name}/info` | lxc-info 原始输出 |
+| POST | `/api/lxc/{name}/start` `stop` `restart` `freeze` `unfreeze` `kill` | 状态操作（通用 `{action}` 路由） |
+| DELETE | `/api/lxc/{name}` | 销毁容器 |
+| GET / PUT | `/api/lxc/{name}/config` | 读取 / 更新 LXC 配置 |
+| POST | `/api/lxc/{name}/migrate` | 迁移到其他存储卷 |
+| PUT | `/api/lxc/{name}/description` | 设置描述 |
+| DELETE | `/api/lxc/{name}/description` | 删除描述 |
+| PUT | `/api/lxc/{name}/autostart` | 自启动开关 |
+| PUT | `/api/lxc/{name}/mac` | 固定 MAC |
+| PUT | `/api/lxc/{name}/order` | 排序号 |
+| PUT | `/api/lxc/{name}/limits` | CPU/内存/Swap 限制 |
+| GET | `/api/lxc/{name}/terminal` | Web 终端（WebSocket upgrade） |
+
+### 创建
+| 方法 | 路径 | 说明 |
+|------|------|------|
+| POST | `/api/lxc/create` | 从模板创建 |
+| POST | `/api/lxc/create/copy` | 克隆容器 |
+| POST | `/api/lxc/create/from-snapshot` | 从快照创建 |
+| POST | `/api/lxc/create/from-backup` | 从备份恢复为新容器 |
+| POST | `/api/lxc/create/from-proxmox` | 从 Proxmox 模板创建 |
+| GET | `/api/lxc/create/{name}/progress` | 创建进度轮询 |
+
+### 快照 / 备份
+| 方法 | 路径 | 说明 |
+|------|------|------|
 | GET | `/api/lxc/{name}/snapshots` | 快照列表 |
 | POST | `/api/lxc/{name}/snapshot` | 创建快照 |
 | POST | `/api/lxc/{name}/snapshot/{snap}/restore` | 恢复快照 |
 | DELETE | `/api/lxc/{name}/snapshot/{snap}` | 删除快照 |
 | GET | `/api/lxc/{name}/backups` | 备份列表 |
 | POST | `/api/lxc/{name}/backup` | 创建备份 |
+| GET | `/api/lxc/{name}/backup/progress` | 备份进度 |
 | POST | `/api/lxc/{name}/backup/{file}/restore` | 恢复备份 |
+| GET | `/api/lxc/{name}/restore/{file}/progress` | 恢复进度 |
 | DELETE | `/api/lxc/{name}/backup/{file}` | 删除备份 |
+| GET | `/api/backups` | 全量备份列表 |
+
+### 模板
+| 方法 | 路径 | 说明 |
+|------|------|------|
 | GET | `/api/lxc/templates` | 可用发行版列表 |
-| GET | `/api/lxc/templates/{distro}/versions` | 某发行版所有 amd64 版本 |
-| GET | `/api/lxc/cache/list` | 本地已缓存镜像列表 |
-| POST | `/api/lxc/cache/fetch` | 下载镜像到缓存 |
-| DELETE | `/api/lxc/cache/{distro}/{release}/{arch}/{variant}` | 删除缓存镜像 |
-| POST | `/api/lxc/create` | 创建容器 |
-| POST | `/api/lxc/create/copy` | 克隆容器 |
-| POST | `/api/lxc/create/from-snapshot` | 从快照创建 |
-| POST | `/api/lxc/create/from-backup` | 从备份创建 |
-| POST | `/api/lxc/{name}/terminal` | 终端（WebSocket upgrade） |
+| GET | `/api/lxc/templates/{distro}/versions` | 某发行版版本列表 |
+| GET | `/api/templates/proxmox` | Proxmox 模板清单 |
+| POST | `/api/templates/proxmox/download` | 下载 Proxmox 模板 |
+| GET | `/api/templates/cached` | 本地已缓存镜像 |
+
+### 系统
+| 方法 | 路径 | 说明 |
+|------|------|------|
+| GET | `/api/version` | 后端版本（与 `manifest` 的 `version` 一致） |
+| GET | `/api/health` | 健康检查 |
+| GET | `/api/stats` | 系统统计 |
 | GET | `/api/interfaces` | 网络接口列表 |
 | GET | `/api/cpus` | CPU 信息 |
-| GET | `/api/stats` | 系统统计 |
-| GET | `/api/settings` | 应用设置 |
+| GET | `/api/settings` | 读取设置 |
 | PUT | `/api/settings` | 保存设置 |
-
----
+| DELETE | `/api/settings` | 恢复默认（清空配置） |
+| GET | `/api/first-run` | 是否首次运行 |
+| GET | `/api/logs` | 运行日志 |
+| GET | `/api/zfs/pools` | 存储卷列表（历史命名，实际为 btrfs 卷） |
 
 ## 存储后端（btrfs 子卷，无需 ZFS）
 
@@ -182,7 +237,9 @@ fnos-lxc/
 
 ## MCP 工具（可选）
 
-包内自带 `mcp/fnlxc_mcp.py`（零依赖 stdio MCP server，14 个工具），安装后位于 `<APP_ROOT>/mcp/fnlxc_mcp.py`。
+包内自带 `mcp/fnlxc_mcp.py`（零依赖 stdio MCP server，14 个工具），安装后位于 `<APP_ROOT>/mcp/fnlxc_mcp.py`（`<APP_ROOT>` 通常为 `/var/apps/lxcmanager`）。
+
+socket 探测顺序：`FNLXC_SOCKET` → `lxcmanager.sock` 各处常见路径 → 旧版 `fnlxc.sock`（向后兼容）。
 它通过 FnLxc 的 Unix socket 调用后端 API，因此模型侧不需要 root、不需要碰 LXC 命令。
 
 在 DSH profile（`cordis.patch.yml`）里加一条即可注册：
@@ -195,7 +252,7 @@ fnos-lxc/
     transport: stdio
     command: /usr/bin/python3
     args:
-      - /var/apps/fnlxc/mcp/fnlxc_mcp.py
+      - /var/apps/lxcmanager/mcp/fnlxc_mcp.py
 ```
 
 工具清单：`fnlxc_health`、`fnlxc_storage`、`fnlxc_settings`、`lxc_list`、`lxc_info`、
@@ -238,7 +295,7 @@ fnos-lxc/
 uninstall_init、uninstall_callback、config_init、config_callback、main），多余的辅助脚本会触发校验失败。
 `wizard/` 可以省略；若保留，tips 项必须用 `helpText` 字段（写 `label` 会被拒：`wizard tips helpText is empty`）。
 
-构建：`bash build.sh` → `dist/lxcmanager-x86-<version>.fpk`。
+构建：`bash build.sh`（或 `bash build-fnpack.sh`）→ `dist/lxcmanager-<version>.fpk`，版本号取自 `manifest`。
 
 ---
 

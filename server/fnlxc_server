@@ -10,7 +10,7 @@ else
     echo "错误: 未找到 Python3" >&2
     exit 1
 fi
-export TRIM_SERVICE_SOCKET="${TRIM_SERVICE_SOCKET:-${APP_ROOT}/fnlxc.sock}"
+export TRIM_SERVICE_SOCKET="${TRIM_SERVICE_SOCKET:-${APP_ROOT}/lxcmanager.sock}"
 export TRIM_APPDEST="${APP_ROOT}"
 export TRIM_PKGVAR="${TRIM_PKGVAR:-${APP_ROOT}/var}"
 export HOME="${HOME:-/var/lib/lxc}"

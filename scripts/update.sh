@@ -1,13 +1,13 @@
 #!/bin/bash
-# fnlxc 更新脚本 — 飞牛应用中心不支持本地第三方包「更新」，用这个脚本替代。
+# lxcmanager 更新脚本 — 飞牛应用中心不支持本地第三方包「更新」，用这个脚本替代。
 #
 # 用法：
-#   bash scripts/update.sh /vol3/1000/临时/fnos-lxc/dist/fnlxc-1.3.3.fpk
+#   bash scripts/update.sh /vol3/1000/临时/fnos-lxc-manager/dist/lxcmanager-3.1.9.fpk
 #
 # 做的事：
 #   1. 备份当前 app 表记录到 /tmp
-#   2. 清理应用中心数据库里 fnlxc 的记录（app / app_service / app_open / app_shortcut）
-#   3. 删除程序目录 /var/apps/fnlxc 与 /usr/local/apps/@appcenter/fnlxc
+#   2. 清理应用中心数据库里 lxcmanager 的记录（app / app_service / app_open / app_shortcut）
+#   3. 删除程序目录 /var/apps/lxcmanager 与 /usr/local/apps/@appcenter/lxcmanager
 #      （保留 @appconf/@appdata/@apphome/@apptemp/@appmeta，容器与配置不丢）
 #   4. 用 trim-cli 安装新包
 #   5. 重启应用并打印状态
@@ -15,12 +15,12 @@
 set -euo pipefail
 
 FPK="${1:-}"
-APP="fnlxc"
+APP="${APP:-lxcmanager}"
 TRIM_CLI="${TRIM_CLI:-/vol1/@appdata/deepseek.harness/dsh-data/skills/fnos/bin/trim-cli-linux-x64}"
 PSQL="psql -h /var/run/postgresql -U postgres -d appcenter"
 
 if [ -z "$FPK" ] || [ ! -f "$FPK" ]; then
-    echo "用法: bash $0 <fnlxc-*.fpk>"
+    echo "用法: bash $0 <lxcmanager-*.fpk>"
     exit 1
 fi
 
@@ -54,5 +54,5 @@ sleep 8
 echo
 echo "==> 结果"
 $PSQL -t -A -F'|' -c "SELECT 'db: '||version||' / '||status FROM app WHERE app_name='${APP}';" 2>/dev/null
-echo -n "socket: "; ls -l "/usr/local/apps/@appcenter/${APP}/fnlxc.sock" 2>/dev/null | awk '{print $1, $6, $7, $8}' || echo "缺失"
+echo -n "socket: "; ls -l "/usr/local/apps/@appcenter/${APP}/lxcmanager.sock" 2>/dev/null | awk '{print $1, $6, $7, $8}' || echo "缺失"
 echo -n "版本: "; grep '^version' "/var/apps/${APP}/manifest" 2>/dev/null | awk '{print $3}'

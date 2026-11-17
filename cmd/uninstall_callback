@@ -5,7 +5,7 @@
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 
 ################################################################################
-# FnLxc 公共函数库
+# LXC 容器管理 公共函数库
 # 包含安装、卸载、升级过程中使用的公共函数
 ################################################################################
 
@@ -179,8 +179,14 @@ clean_all_data()
     #   @appdata    → 运行时数据（PKGVAR）
     #   @appconf    → 配置文件（TRIM_PKGETC）
     # 三种路径都要清理干净
+    # 新目录（lxcmanager）为主，旧版 fnlxc 目录一并清理，避免残留。
     for _dir in \
-        "${TRIM_APPDEST:-/var/apps/fnlxc}" \
+        "${TRIM_APPDEST:-/var/apps/lxcmanager}" \
+        "/var/apps/lxcmanager" \
+        "/usr/local/apps/@appcenter/lxcmanager" \
+        "/usr/local/apps/@appdata/lxcmanager" \
+        "/usr/local/apps/@appconf/lxcmanager" \
+        "/var/apps/fnlxc" \
         "/usr/local/apps/@appcenter/fnlxc" \
         "/usr/local/apps/@appdata/fnlxc" \
         "/usr/local/apps/@appconf/fnlxc" \
@@ -291,7 +297,7 @@ patch_lxc_download_template()
 # ============================================================================
 setup_sysctl()
 {
-    local conf="/etc/sysctl.d/99-fnlxc.conf"
+    local conf="/etc/sysctl.d/99-lxcmanager.conf"
     local need_restart=false
 
     for param in "net.ipv4.ip_forward=1" \
@@ -325,7 +331,7 @@ SYSCTL_EOF
 # install_init / upgrade_init 在文件复制之前执行，这里把执行位补回来。
 fix_package_dir_perms()
 {
-    local n="${TRIM_APPNAME:-fnlxc}"
+    local n="${TRIM_APPNAME:-lxcmanager}"
     local d
     for d in /vol*/appcenter-downloads/"${n}"-*-tpk; do
         [ -d "$d" ] || continue
@@ -356,6 +362,10 @@ install_log "用户选项: 卸载LXC=${REMOVE_LXC}, 删除数据=${REMOVE_DATA}"
 # 注意：config 文件在最后的 clean_all_data 之前必须保持存在，
 #       否则读不到 lxc_path 会导致子卷清理被跳过
 for _cfg in \
+    "/usr/local/apps/@appcenter/lxcmanager/config/lxcmanager.cfg" \
+    "/usr/local/apps/@appdata/lxcmanager/config/lxcmanager.cfg" \
+    "/var/apps/lxcmanager/config/lxcmanager.cfg" \
+    "${INST_ETC}/lxcmanager.cfg" \
     "/usr/local/apps/@appcenter/fnlxc/config/fnlxc.cfg" \
     "/usr/local/apps/@appdata/fnlxc/config/fnlxc.cfg" \
     "/var/apps/fnlxc/config/fnlxc.cfg" \
@@ -482,7 +492,7 @@ if is_true "${REMOVE_LXC}"; then
     rm -rf /var/cache/lxc/* 2>/dev/null || true
 
     # 清理 sysctl 配置
-    rm -f /etc/sysctl.d/99-fnlxc.conf /etc/sysctl.d/99-fnlxc-ipforward.conf 2>/dev/null || true
+    rm -f /etc/sysctl.d/99-lxcmanager.conf /etc/sysctl.d/99-lxcmanager-ipforward.conf /etc/sysctl.d/99-fnlxc.conf /etc/sysctl.d/99-fnlxc-ipforward.conf 2>/dev/null || true
 
     # ── 删除 lxc 管理用户 ──────────────────────────
     install_log "删除 lxc 管理用户..."
@@ -511,14 +521,14 @@ install_log "iptables 规则已清理"
 
 # ── 清理日志文件（主文件 + 轮转备份）─────────────────────
 install_log "清理日志文件..."
-rm -f /var/log/apps/fnlxc.log 2>/dev/null || true
+rm -f /var/log/apps/lxcmanager.log /var/log/apps/fnlxc.log 2>/dev/null || true
 for i in $(seq 1 10); do
-    rm -f "/var/log/apps/fnlxc.log.$i" 2>/dev/null || true
+    rm -f "/var/log/apps/lxcmanager.log.$i" "/var/log/apps/fnlxc.log.$i" 2>/dev/null || true
 done
 install_log "日志文件已清理"
 
 # 清理 PID 和日志
-rm -f "${TRIM_PKGVAR}/fnlxc.pid" "${TRIM_PKGVAR}/fnlxc.log" 2>/dev/null || true
+rm -f "${TRIM_PKGVAR}/lxcmanager.pid" "${TRIM_PKGVAR}/lxcmanager.log" "${TRIM_PKGVAR}/fnlxc.pid" "${TRIM_PKGVAR}/fnlxc.log" 2>/dev/null || true
 
 # ── 删除 fnlxc 应用用户（无条件，这是本应用的专属系统用户）─ ──
 install_log "删除 fnlxc 应用用户..."

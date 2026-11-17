@@ -1,26 +1,30 @@
 #!/bin/bash
 
 ################################################################################
-# FnLxc 服务管理器
-# 负责启动、停止、重启、查询 FnLxc Python FastAPI 服务
+# LXC 容器管理 服务管理器
+# 负责启动、停止、重启、查询 LXC 容器管理 Python 后端服务
 ################################################################################
 
-# ── 路径自动检测（支持 appcenter / 手动部署 / 开发环境多重上下文） ──
-if [ -z "${TRIM_APPDEST}" ]; then
-    # 尝试从各种常见路径推断
-    for candidate in /var/apps/fnlxc /usr/local/apps/@appcenter/fnlxc /workspace/fnlxc; do
-        if [ -d "${candidate}" ] && [ -f "${candidate}/server/fnlxc_server" ]; then
-            export TRIM_APPDEST="${candidate}"
-            break
-        fi
-    done
+# ── 路径自动检测：优先用脚本自身位置，环境变量可能被外部污染 ──
+SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
+APP_ROOT="$(cd "${SCRIPT_DIR}/.." && pwd)"
+_DETECTED=""
+for candidate in "${APP_ROOT}" "${APP_ROOT}/target" /var/apps/lxcmanager/target /usr/local/apps/@appcenter/lxcmanager /var/apps/fnlxc /usr/local/apps/@appcenter/fnlxc; do
+    if [ -d "${candidate}" ] && [ -f "${candidate}/server/fnlxc_server" ]; then
+        _DETECTED="${candidate}"
+        break
+    fi
+done
+if [ -n "${_DETECTED}" ]; then
+    TRIM_APPDEST="${_DETECTED}"
+else
+    TRIM_APPDEST="${TRIM_APPDEST:-/var/apps/lxcmanager}"
 fi
-# 兜底
-TRIM_APPDEST="${TRIM_APPDEST:-/var/apps/fnlxc}"
+export TRIM_APPDEST
 
 [ -z "${TRIM_PKGVAR}" ] && TRIM_PKGVAR="${TRIM_APPDEST}/var"
 
-APP_NAME="fnlxc"
+APP_NAME="lxcmanager"
 LOG_FILE="${TRIM_PKGVAR}/${APP_NAME}.log"
 PID_FILE="${TRIM_PKGVAR}/${APP_NAME}.pid"
 SOCKET_PATH="${TRIM_APPDEST}/lxcmanager.sock"
@@ -50,7 +54,7 @@ do_status()
         pid=$(cat "${PID_FILE}" 2>/dev/null)
         if check_process "${pid}"; then
             # PID 变动时才打印，避免 fnOS 轮询刷屏
-            local last_pid_file="/tmp/fnlxc_last_pid"
+            local last_pid_file="/tmp/lxcmanager_last_pid"
             local last_pid=""
             [ -f "${last_pid_file}" ] && last_pid=$(cat "${last_pid_file}")
             if [ "${last_pid}" != "${pid}" ]; then

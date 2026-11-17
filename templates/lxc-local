@@ -24,7 +24,14 @@ TEMPLATE_NAME="local"
 VERSION="1.0.0"
 
 # ── 配置路径 ──────────────────────────────────────
-CONFIG_FILE="/var/apps/fnlxc/etc/config.env"
+# 新版安装目录优先，找不到再回退旧版 fnlxc 路径。
+CONFIG_FILE=""
+for _c in "/var/apps/${TRIM_APPNAME:-lxcmanager}/etc/config.env" \
+          /var/apps/lxcmanager/etc/config.env \
+          /var/apps/fnlxc/etc/config.env; do
+    [ -f "$_c" ] && CONFIG_FILE="$_c" && break
+done
+unset _c
 DEFAULT_CACHE_PATH="/var/cache/lxc/images"
 
 # ── 工具 ──────────────────────────────────────────

@@ -40,7 +40,7 @@ fi
 
 # ── 从 manifest 读元数据 ────────────────────────────────────
 get_meta() { sed -nE "s/^${1}[[:space:]]*=[[:space:]]*//p" manifest | head -1 | sed -E 's/^"(.*)"$/\1/' | tr -d '\r'; }
-APPNAME="$(get_meta appname)"; APPNAME="${APPNAME:-fnlxc}"
+APPNAME="$(get_meta appname)"; APPNAME="${APPNAME:-lxcmanager}"
 VERSION="$(get_meta version)"; VERSION="${VERSION:-0.0.0}"
 
 echo "============================================"

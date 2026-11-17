@@ -5,7 +5,7 @@
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 
 ################################################################################
-# FnLxc 公共函数库
+# LXC 容器管理 公共函数库
 # 包含安装、卸载、升级过程中使用的公共函数
 ################################################################################
 
@@ -179,8 +179,14 @@ clean_all_data()
     #   @appdata    → 运行时数据（PKGVAR）
     #   @appconf    → 配置文件（TRIM_PKGETC）
     # 三种路径都要清理干净
+    # 新目录（lxcmanager）为主，旧版 fnlxc 目录一并清理，避免残留。
     for _dir in \
-        "${TRIM_APPDEST:-/var/apps/fnlxc}" \
+        "${TRIM_APPDEST:-/var/apps/lxcmanager}" \
+        "/var/apps/lxcmanager" \
+        "/usr/local/apps/@appcenter/lxcmanager" \
+        "/usr/local/apps/@appdata/lxcmanager" \
+        "/usr/local/apps/@appconf/lxcmanager" \
+        "/var/apps/fnlxc" \
         "/usr/local/apps/@appcenter/fnlxc" \
         "/usr/local/apps/@appdata/fnlxc" \
         "/usr/local/apps/@appconf/fnlxc" \
@@ -291,7 +297,7 @@ patch_lxc_download_template()
 # ============================================================================
 setup_sysctl()
 {
-    local conf="/etc/sysctl.d/99-fnlxc.conf"
+    local conf="/etc/sysctl.d/99-lxcmanager.conf"
     local need_restart=false
 
     for param in "net.ipv4.ip_forward=1" \
@@ -308,7 +314,7 @@ setup_sysctl()
 
     if $need_restart; then
         cat > "$conf" << 'SYSCTL_EOF'
-# FnLxc - LXC 容器网络所需内核参数
+# LXC 容器管理 - 容器网络所需内核参数
 net.ipv4.ip_forward = 1
 net.bridge.bridge-nf-call-iptables = 1
 net.bridge.bridge-nf-call-ip6tables = 1
@@ -325,7 +331,7 @@ SYSCTL_EOF
 # install_init / upgrade_init 在文件复制之前执行，这里把执行位补回来。
 fix_package_dir_perms()
 {
-    local n="${TRIM_APPNAME:-fnlxc}"
+    local n="${TRIM_APPNAME:-lxcmanager}"
     local d
     for d in /vol*/appcenter-downloads/"${n}"-*-tpk; do
         [ -d "$d" ] || continue
@@ -336,25 +342,32 @@ fix_package_dir_perms()
 
 
 log_step "2" "install_callback"
-install_log "FnLxc 安装后初始化..."
+install_log "LXC 容器管理 安装后初始化..."
 
 # ── 数据目录（install_type=volume → 数据卷 /vol1/@app*；root → 系统分区 /usr/local/apps/@app*）──
-_PKG_VAR="${TRIM_PKGVAR:-/vol1/@appdata/fnlxc}"
-_PKG_ETC="${TRIM_PKGETC:-/vol1/@appconf/fnlxc}"
-_PKG_HOME="${TRIM_PKGHOME:-/vol1/@apphome/fnlxc}"
-_PKG_TMP="${TRIM_PKGTMP:-/vol1/@apptemp/fnlxc}"
-_PKG_META="${TRIM_PKGMETA:-/vol1/@appmeta/fnlxc}"
+_PKG_VAR="${TRIM_PKGVAR:-/vol1/@appdata/lxcmanager}"
+_PKG_ETC="${TRIM_PKGETC:-/vol1/@appconf/lxcmanager}"
+_PKG_HOME="${TRIM_PKGHOME:-/vol1/@apphome/lxcmanager}"
+_PKG_TMP="${TRIM_PKGTMP:-/vol1/@apptemp/lxcmanager}"
+_PKG_META="${TRIM_PKGMETA:-/vol1/@appmeta/lxcmanager}"
 
 mkdir -p "${_PKG_VAR}" "${_PKG_ETC}" "${INST_ETC}"
 
 # ── 从 root 模式迁移到 volume 模式 ──
 # 旧版本 install_type=root，数据在 /usr/local/apps/@app*；改成 volume 后应用中心把
-# /var/apps/fnlxc/{etc,home,tmp,var} 指向 /vol1/@app*，这里把旧数据搬过去，避免配置丢失。
+# /var/apps/{APP}/{etc,home,tmp,var} 指向 /vol1/@app*，这里把旧数据搬过去，避免配置丢失。
+# 同时兼容旧版 fnlxc 目录名。
 for _pair in \
+    "/usr/local/apps/@appconf/lxcmanager:${_PKG_ETC}" \
+    "/usr/local/apps/@apphome/lxcmanager:${_PKG_HOME}" \
+    "/usr/local/apps/@apptemp/lxcmanager:${_PKG_TMP}" \
+    "/usr/local/apps/@appdata/lxcmanager:${_PKG_VAR}" \
     "/usr/local/apps/@appconf/fnlxc:${_PKG_ETC}" \
     "/usr/local/apps/@apphome/fnlxc:${_PKG_HOME}" \
     "/usr/local/apps/@apptemp/fnlxc:${_PKG_TMP}" \
-    "/usr/local/apps/@appdata/fnlxc:${_PKG_VAR}" ; do
+    "/usr/local/apps/@appdata/fnlxc:${_PKG_VAR}" \
+    "/vol1/@appconf/fnlxc:${_PKG_ETC}" \
+    "/vol1/@appdata/fnlxc:${_PKG_VAR}" ; do
     _src="${_pair%%:*}"; _dst="${_pair##*:}"
     [ -d "$_src" ] || continue
     [ "$_src" = "$_dst" ] && continue
@@ -365,7 +378,7 @@ for _pair in \
     fi
 done
 
-# ── 确保 /var/apps/fnlxc 下的所有符号链接目标都存在 ──
+# ── 确保 /var/apps/{APP} 下的所有符号链接目标都存在 ──
 # 应用中心的 /var/apps/{app}/{etc,home,tmp,var,target,meta} 是指向 @appconf/@apphome/@apptemp/@appdata/@appcenter/@appmeta 的符号链接。
 # 若某个目标目录缺失，链接就悬空，应用中心读取应用环境时会拿到 nil 并 panic（升级/卸载/重启全部失败）。
 for _d in "${_PKG_VAR}" "${_PKG_ETC}" "${_PKG_HOME}" "${_PKG_TMP}" "${_PKG_META}" ; do
@@ -411,7 +424,7 @@ install_log "Python 依赖安装完成"
 install_log "配置容器网络..."
 if [ "$(sysctl -n net.ipv4.ip_forward 2>/dev/null)" != "1" ]; then
     sysctl -w net.ipv4.ip_forward=1 >/dev/null
-    echo "net.ipv4.ip_forward = 1" > /etc/sysctl.d/99-fnlxc-ipforward.conf
+    echo "net.ipv4.ip_forward = 1" > /etc/sysctl.d/99-lxcmanager-ipforward.conf
 fi
 if systemctl is-active lxc-net &>/dev/null || service lxc-net status &>/dev/null; then
     install_log "lxc-net 服务运行中"
@@ -443,7 +456,7 @@ install_log "lxc 用户已加入 Users 组"
 # ── sudoers ──────────────────────────────────────
 install_log "配置 sudoers..."
 cat > /etc/sudoers.d/lxc << 'SUDOEOF'
-# FnLxc: allow lxc user to manage containers
+# LXC 容器管理: allow lxc user to manage containers
 lxc ALL=(root) NOPASSWD: /usr/bin/lxc-ls
 lxc ALL=(root) NOPASSWD: /usr/bin/lxc-info
 lxc ALL=(root) NOPASSWD: /usr/bin/lxc-start
@@ -496,8 +509,11 @@ if [ -n "${TRIM_APPDEST}" ]; then
     APP_WIZARD_DIR="${TRIM_APPDEST}/wizard"
     mkdir -p "$APP_WIZARD_DIR"
 
-    # 尝试从多个可能的来源复制 wizard JSON
-    for src_dir in "/vol1/appcenter-downloads/fnlxc-3.0.1-tpk" "/tmp/app-root-${APPID}"; do
+    # 下载目录名带版本号（appname-ver-tpk），不能写死；按当前 appname 通配匹配，
+    # 末尾保留旧包名 fnlxc-* 以兼容从旧版升级的场景。
+    for src_dir in /vol*/appcenter-downloads/"${TRIM_APPNAME:-lxcmanager}"-*-tpk \
+                   /vol*/appcenter-downloads/fnlxc-*-tpk \
+                   "/tmp/app-root-${APPID}"; do
         for src in "${src_dir}/wizard/install" "${src_dir}/wizard/config"; do
             if [ -f "$src" ]; then
                 cp -f "$src" "${APP_WIZARD_DIR}/"
@@ -507,5 +523,5 @@ if [ -n "${TRIM_APPDEST}" ]; then
     done
 fi
 
-install_log "FnLxc 安装后初始化完成！"
+install_log "LXC 容器管理 安装后初始化完成！"
 exit 0

@@ -68,27 +68,37 @@ if "HOME" not in os.environ or not os.environ.get("HOME"):
     os.environ["HOME"] = "/vol1/1000/lxc"
 logger.info("HOME=%s", os.environ.get("HOME", "NOT SET"))
 
+# 版本号：必须与仓库根目录 manifest 的 version 保持一致（构建包版本取 manifest，
+# /api/health 与 /api/version 返回此值），升级时两处一起改。
 APP_VERSION = "3.1.9"
 # --- Paths ---
 APP_ROOT = os.path.normpath(os.environ.get("TRIM_APPDEST", os.path.join(os.path.dirname(os.path.abspath(__file__)), "..")))
 UI_DIR = os.path.join(APP_ROOT, "ui")
 GATEWAY_PREFIX = os.environ.get("GATEWAY_PREFIX", "/app/lxcmanager")
 SOCKET_PATH = os.environ.get("TRIM_SERVICE_SOCKET", "/var/apps/lxcmanager/lxcmanager.sock")
-# 配置路径：TRIM_PKGETC 已包含应用目录（如 /usr/local/apps/@appconf/fnlxc）
-# 直接在其下找 fnlxc.cfg；若无此环境变量则用 APP_ROOT/config（开发环境兼容）
-_CFG_DIR = os.environ.get("TRIM_PKGETC", "")
-if _CFG_DIR:
-    SETTINGS_FILE = os.path.join(_CFG_DIR, "fnlxc.cfg")
-else:
-    _cfg_base = os.path.join(APP_ROOT, "config")
-    SETTINGS_FILE = os.path.join(_cfg_base, "fnlxc.cfg")
-os.makedirs(os.path.dirname(SETTINGS_FILE), exist_ok=True)
+# 配置路径：TRIM_PKGETC 已包含应用目录（如 /usr/local/apps/@appconf/lxcmanager）
+# 新配置名为 lxcmanager.cfg；若只存在旧版 fnlxc.cfg 则继续沿用，保存时写入新文件名。
+_CFG_DIR = os.environ.get("TRIM_PKGETC", "") or os.path.join(APP_ROOT, "config")
+SETTINGS_FILE = os.path.join(_CFG_DIR, "lxcmanager.cfg")
+LEGACY_SETTINGS_FILE = os.path.join(_CFG_DIR, "fnlxc.cfg")
+
+
+def settings_read_path():
+    """读取用路径：新文件优先；只有旧版 fnlxc.cfg 时回退读取，保存仍写新文件名。"""
+    if os.path.isfile(SETTINGS_FILE):
+        return SETTINGS_FILE
+    if os.path.isfile(LEGACY_SETTINGS_FILE):
+        return LEGACY_SETTINGS_FILE
+    return SETTINGS_FILE
+
+
+os.makedirs(_CFG_DIR, exist_ok=True)
 # 默认 LXC 容器路径（会被 settings 文件覆盖）
 LXC_PATH = "/vol1/1000/lxc"
 # 启动时从配置读取 LXC_PATH 和存储卷名（覆盖默认值）
 _CFG_POOL = None
-if os.path.isfile(SETTINGS_FILE):
-    with open(SETTINGS_FILE) as _f:
+if os.path.isfile(settings_read_path()):
+    with open(settings_read_path()) as _f:
         for _line in _f:
             _line = _line.strip()
             if _line.startswith("lxc_path="):
@@ -1111,8 +1121,8 @@ def parse_int(text, default=0):
 
 def load_settings():
     s = dict(DEFAULT_SETTINGS)
-    if os.path.isfile(SETTINGS_FILE):
-        with open(SETTINGS_FILE) as f:
+    if os.path.isfile(settings_read_path()):
+        with open(settings_read_path()) as f:
             for line in f:
                 line = line.strip()
                 if "=" in line and not line.startswith("#"):
@@ -2877,7 +2887,15 @@ if HAS_AIOHTTP:
             lines = [l.rstrip() for l in content.split("\n")]
             return web.json_response({"success": True, "data": lines})
         except FileNotFoundError:
-            return web.json_response({"success": False, "error": f"配置文件未找到"}, status=404)
+            return web.json_response({"success": False, "error": "配置文件未找到"}, status=404)
+        except PermissionError:
+            # LXC 容器运行中会把容器目录/config 收成 0000（隔离保护），
+            # 后端以 lxc 用户跑时连 root 也读不到，要给出可操作的提示而不是"未找到"。
+            return web.json_response({
+                "success": False,
+                "error": "容器运行中，配置被 LXC 锁定。请停止容器后再编辑配置。",
+                "locked": True,
+            }, status=423)
         except Exception as e:
             return web.json_response({"success": False, "error": str(e)}, status=500)
 
@@ -2895,7 +2913,13 @@ if HAS_AIOHTTP:
             with open(config_path) as f:
                 lines = f.readlines()
         except FileNotFoundError:
-            return web.json_response({"success": False, "error": f"配置文件未找到"}, status=404)
+            return web.json_response({"success": False, "error": "配置文件未找到"}, status=404)
+        except PermissionError:
+            return web.json_response({
+                "success": False,
+                "error": "容器运行中，配置被 LXC 锁定。请停止容器后再编辑配置。",
+                "locked": True,
+            }, status=423)
         new_lines = []
         updated_keys = set(updates.keys())
 
@@ -4448,7 +4472,7 @@ if HAS_AIOHTTP:
     # ── First-run detection ──
     async def handle_first_run(request):
         """检查是否首次运行：配置文件不存在即视为首次运行（卸载时已删除配置）"""
-        is_first = not os.path.isfile(SETTINGS_FILE)
+        is_first = not os.path.isfile(settings_read_path())
         return web.json_response({"success": True, "data": {"first_run": is_first}})
 
     # ── Settings ──
@@ -4507,9 +4531,10 @@ if HAS_AIOHTTP:
                 await loop.run_in_executor(None, _stop_containers_under_path, lxc_path)
                 logger.info("恢复出厂设置：所有容器已停止")
 
-            if os.path.isfile(SETTINGS_FILE):
-                os.remove(SETTINGS_FILE)
-                logger.info("配置文件已删除: %s", SETTINGS_FILE)
+            for _sf in (SETTINGS_FILE, LEGACY_SETTINGS_FILE):
+                if os.path.isfile(_sf):
+                    os.remove(_sf)
+                    logger.info("配置文件已删除: %s", _sf)
             return web.json_response({"success": True, "message": "设置已重置，重新加载后进入首次运行向导"})
         except Exception as e:
             logger.error("删除配置文件失败: %s", e)
@@ -4771,7 +4796,7 @@ def main():
                     response_data = json.dumps({"success": True, "data": list_containers()}).encode()
                     status = "200 OK"
                 elif api_path == "/api/first-run" and method == "GET":
-                    is_first = not os.path.isfile(SETTINGS_FILE)
+                    is_first = not os.path.isfile(settings_read_path())
                     response_data = json.dumps({"success": True, "data": {"first_run": is_first}}).encode()
                     status = "200 OK"
                 elif api_path == "/api/stats" and method == "GET":
