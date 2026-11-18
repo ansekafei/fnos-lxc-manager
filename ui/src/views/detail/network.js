@@ -70,7 +70,16 @@ export async function onAction(act, btn) {
     const { sel, nicSel } = el._inputs;
     try {
       const mode = sel.value;
-      const updates = { 'lxc.net.0.type': mode };
+      // lxcbr0 是 NAT 模式：type 必须写合法值 veth，link 才是 lxcbr0
+      // （曾把 'lxcbr0' 直接写进 lxc.net.0.type，LXC 解析失败导致容器起不来）
+      let updates;
+      if (mode === 'lxcbr0') {
+        updates = { 'lxc.net.0.type': 'veth', 'lxc.net.0.link': 'lxcbr0', 'lxc.net.0.flags': 'up' };
+      } else if (mode === 'none') {
+        updates = { 'lxc.net.0.type': 'empty' };
+      } else {
+        updates = { 'lxc.net.0.type': mode };
+      }
       if (mode === 'macvlan' && nicSel.value) updates['lxc.net.0.link'] = nicSel.value;
       await updateConfig(selected, updates);
       toastOk('网络模式已更新');
