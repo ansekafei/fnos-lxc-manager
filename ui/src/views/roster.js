@@ -24,9 +24,9 @@ export function render() {
   }
 
   for (const c of containers) {
-    const running = c.state === 'RUNNING';
+    const running = (c.state || '').toLowerCase() === 'running';
     const el = document.createElement('div');
-    el.className = `ct ${running ? 'run' : ''} ${c.state === 'FROZEN' ? 'frozen' : ''} ${c.name === selected ? 'on' : ''}`;
+    el.className = `ct ${running ? 'run' : ''} ${(c.state || '').toLowerCase() === 'frozen' ? 'frozen' : ''} ${c.name === selected ? 'on' : ''}`;
     el.dataset.name = c.name; // 事件委托用，杜绝内联 onclick
     el.innerHTML = `
       <span class="st"></span>

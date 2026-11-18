@@ -91,7 +91,7 @@ function renderDetailTab() {
 
 function renderTopbar(state) {
   if (state.page === 'containers' && state.containers.length) {
-    const run = state.containers.filter((c) => c.state === 'RUNNING').length;
+    const run = state.containers.filter((c) => (c.state || '').toLowerCase() === 'running').length;
     el.pill.style.display = '';
     el.pill.textContent = `${run} 运行中 · ${state.containers.length - run} 已停止`;
   } else {

@@ -38,7 +38,7 @@ export async function load() {
     renderEmpty();
   }
   // 运行中每 5s 轮询刷新
-  if (getState().info?.state === 'RUNNING') pollTimer = setInterval(refreshInfo, 5000);
+  if ((getState().info?.state || '').toLowerCase() === 'running') pollTimer = setInterval(refreshInfo, 5000);
 }
 
 function stopPoll() { if (pollTimer) { clearInterval(pollTimer); pollTimer = null; } }
@@ -62,7 +62,7 @@ export function render() {
   /* 头部：名字 + 状态 + 操作按钮 */
   const head = document.createElement('div');
   head.className = 'd-head';
-  const running = info?.state === 'RUNNING';
+  const running = (info?.state || '').toLowerCase() === 'running';
   head.innerHTML = `
     <span class="st ${running ? 'run' : ''}" style="width:11px;height:11px;border-radius:50%;background:${running ? 'var(--ok)' : 'var(--stop)'}"></span>
     <h2></h2>
@@ -134,18 +134,23 @@ function renderOverview(body) {
 
   const base = [
     ['系统', `${info.os || '—'} ${info.release || ''}`.trim()],
-    ['IPv4', (info.ipv4 || info.ips || ['—'])[0] || '—'],
+    ['IPv4', (info.ipv4?.length ? info.ipv4 : info.ips?.length ? info.ips : ['—'])[0] || '—'],
     ['PID', info.pid ?? '—'],
     ['开机自启', info.autostart ? '已开启' : '未开启'],
-    ['快照数', info.snapshots?.length ?? 0],
+    ['快照数', typeof info.snapshots === 'number' ? info.snapshots : (info.snapshots?.length ?? 0)],
   ];
   fillKv(body, '#ov-base', base);
 
   const nets = (info.network || info.interfaces || []);
+  const v4 = info.ipv4?.length ? info.ipv4 : (info.ips || []);
   if (nets.length) {
     fillKv(body, '#ov-net', nets.slice(0, 5).map((n) => [n.name || n.interface || 'eth0', n.ip || n.address || '—']));
+  } else if (v4.length) {
+    const rows = v4.slice(0, 5).map((ip, i) => [v4.length > 1 ? `IPv4 ${i + 1}` : 'IPv4', ip]);
+    (info.ipv6 || []).slice(0, 2).forEach((ip, i) => rows.push([info.ipv6.length > 1 ? `IPv6 ${i + 1}` : 'IPv6', ip]));
+    fillKv(body, '#ov-net', rows);
   } else {
-    fillKv(body, '#ov-net', [['IPv4', Array.isArray(info.ips) ? info.ips.join(', ') || '—' : '—']]);
+    fillKv(body, '#ov-net', [['IPv4', '—']]);
   }
 
   /* 最近备份异步补齐 */
@@ -180,7 +185,7 @@ export async function onAction(act) {
     const ok = await confirm({ title: '删除容器', text: `确定删除容器 ${selected} 吗？此操作不可恢复。`, danger: true, okLabel: '删除' });
     if (!ok) return;
     try {
-      await deleteContainer(selected, { force: getState().info?.state === 'RUNNING' });
+      await deleteContainer(selected, { force: ((getState().info?.state || '').toLowerCase() === 'running') });
       toastOk(`容器 ${selected} 已删除`);
       setState({ selected: null, info: null, containers: getState().containers.filter((c) => c.name !== selected) }, ['selected', 'info', 'containers']);
     } catch (e) { toastErr(`删除失败：${e.message}`); }
