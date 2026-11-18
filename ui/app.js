@@ -1,20 +1,26 @@
 /* FnLxc v2 — 完整前端 */
 const API = '/app/lxcmanager/api/lxc';
 const SYS_API = '/app/lxcmanager/api';
-let containers = [], templates = [], selected = new Set(), currentContainer = '';
+let containers = [], templates = [], currentContainer = '';
+let activeDetailTab = 'info';
+let detailRequestId = 0;
 let proxmoxLoaded = false, proxmoxData = null;
 let cacheLoaded = false, cacheData = null;
 let activeCreateTab = 'local';
 let confirmCallback = null, promptCallback = null;
 let autoRefresh = null;
-let filterState = ''; // '' | 'running' | 'stopped' | 'frozen'
 
 // ═══════════ API ═══════════
 async function api(method, path, body) {
   const opts = { method, headers: { 'Content-Type': 'application/json' } };
   if (body) opts.body = JSON.stringify(body);
   const r = await fetch(path, opts);
-  const d = await r.json();
+  let d;
+  try {
+    d = await r.json();
+  } catch(e) {
+    throw new Error(`HTTP ${r.status}: 响应不是有效 JSON`);
+  }
   if (!r.ok && !d.success) throw new Error(d.error || `HTTP ${r.status}`);
   if (!d.success) throw new Error(d.error || '请求失败');
   return d;
@@ -68,15 +74,62 @@ function toast(msg, type = 'info') {
   }, 3500);
 }
 
+// ═══════════ Modal Manager (统一弹窗层级管理) ═══════════
+const ModalManager = {
+  stack: [],
+  open(id) {
+    // 容器详情已经并入工作区；普通弹窗与终端互斥
+    if (id !== 'terminal-modal') this.closeAll();
+    if (id === 'terminal-modal') this.close('terminal-modal');
+    const el = document.getElementById(id);
+    if (!el) return;
+    el.classList.add('active');
+    this.stack.push(id);
+    // ESC 关闭监听
+    if (!this._escBound) {
+      document.addEventListener('keydown', (e) => {
+        if (e.key === 'Escape' && this.stack.length > 0) {
+          this.closeTop();
+        }
+      });
+      this._escBound = true;
+    }
+  },
+  close(id) {
+    const el = document.getElementById(id);
+    if (el) el.classList.remove('active');
+    this.stack = this.stack.filter(i => i !== id);
+  },
+  closeTop() {
+    if (this.stack.length === 0) return;
+    const id = this.stack[this.stack.length - 1];
+    this.close(id);
+    // 特殊清理
+    if (id === 'terminal-modal') { closeTerminal(); }
+    if (id === 'confirm-modal') { confirmCallback = null; }
+    if (id === 'prompt-modal') { promptCallback = null; }
+  },
+  closeAll() {
+    this.stack.forEach(id => {
+      const el = document.getElementById(id);
+      if (el) el.classList.remove('active');
+    });
+    this.stack = [];
+    if (termSocket) { termSocket.close(); termSocket = null; }
+    confirmCallback = null;
+    promptCallback = null;
+  }
+};
+
 // ═══════════ Confirm / Prompt ═══════════
 function confirm(msg, cb) {
   document.getElementById('confirm-message').textContent = msg;
   document.getElementById('confirm-btn').textContent = '确定';
   document.getElementById('confirm-btn').className = 'btn btn-danger';
   confirmCallback = cb;
-  document.getElementById('confirm-modal').classList.add('active');
+  ModalManager.open('confirm-modal');
 }
-function closeConfirm() { document.getElementById('confirm-modal').classList.remove('active'); confirmCallback = null; }
+function closeConfirm() { ModalManager.close('confirm-modal'); confirmCallback = null; }
 function confirmAction() { const cb = confirmCallback; closeConfirm(); if (cb) cb(); }
 
 function promptInput(title, msg, placeholder, cb) {
@@ -85,10 +138,10 @@ function promptInput(title, msg, placeholder, cb) {
   document.getElementById('prompt-input').value = '';
   document.getElementById('prompt-input').placeholder = placeholder;
   promptCallback = cb;
-  document.getElementById('prompt-modal').classList.add('active');
+  ModalManager.open('prompt-modal');
   setTimeout(() => document.getElementById('prompt-input').focus(), 200);
 }
-function closePrompt() { document.getElementById('prompt-modal').classList.remove('active'); promptCallback = null; }
+function closePrompt() { ModalManager.close('prompt-modal'); promptCallback = null; }
 function promptConfirm() {
   const cb = promptCallback, val = document.getElementById('prompt-input').value.trim();
   closePrompt(); if (cb) cb(val);
@@ -119,22 +172,65 @@ function fmtState(s) { return { running: '运行中', stopped: '已停止', froz
 function stateClass(s) { return { running: 'running', stopped: 'stopped', frozen: 'frozen', 'backing up': 'running' }[s] || 'unknown'; }
 function fmtDate(d) { if (!d) return '-'; try { return new Date(d).toLocaleString('zh-CN'); } catch(e) { return d; } }
 
-// ═══════════ Tab Navigation ═══════════
+// ═══════════ Navigation (Sidebar) ═══════════
+const TAB_TITLES = {
+  dashboard: '仪表盘',
+  containers: '容器',
+  create: '创建',
+  templates: '模板',
+  settings: '设置',
+  logs: '日志',
+};
+
 function switchTab(name) {
-  document.querySelectorAll('.tab-btn').forEach(b => b.classList.toggle('active', b.dataset.tab === name));
+  // 兼容旧选择器：优先侧边栏 .nav-item，回退到旧 .tab-btn
+  const items = document.querySelectorAll('.nav-item, .tab-btn');
+  items.forEach(b => b.classList.toggle('active', b.dataset.tab === name));
   document.querySelectorAll('.tab-content').forEach(c => c.classList.toggle('active', c.id === `tab-${name}`));
+  // 同步顶部栏标题
+  const titleEl = document.getElementById('topbar-title');
+  if (titleEl && TAB_TITLES[name]) titleEl.textContent = TAB_TITLES[name];
+  // 小屏幕：切换后自动收起侧边栏
+  if (window.innerWidth <= 900) closeSidebar();
+
   if (name === 'containers') loadContainers();
   else if (name === 'dashboard') loadDashboard();
   else if (name === 'templates') { showProxmoxTemplates(); showCachedTemplates(); }
   else if (name === 'create') { refreshCreateSelects(); refreshLocalTemplateSelect(); }
   else if (name === 'settings') loadSettings();
   else if (name === 'logs') loadLogs();
-  // Sync filter tab active state when navigating via tab bar
-  if (name === 'containers') {
-    document.querySelectorAll('.filter-tab').forEach(b =>
-      b.classList.toggle('active', b.dataset.filter === filterState));
+}
+
+// ═══════════ Sidebar Toggle (响应式) ═══════════
+function toggleSidebar() {
+  const sidebar = document.getElementById('sidebar');
+  const mask = document.getElementById('sidebar-mask');
+  if (!sidebar) return;
+  if (window.innerWidth <= 900) {
+    // 移动端：抽屉式展开/收起
+    const open = sidebar.classList.toggle('mobile-open');
+    if (mask) mask.classList.toggle('visible', open);
+  } else {
+    // 桌面端：折叠为仅图标
+    sidebar.classList.toggle('collapsed');
   }
 }
+function closeSidebar() {
+  const sidebar = document.getElementById('sidebar');
+  const mask = document.getElementById('sidebar-mask');
+  if (sidebar) sidebar.classList.remove('mobile-open');
+  if (mask) mask.classList.remove('visible');
+}
+function openSidebar() {
+  const sidebar = document.getElementById('sidebar');
+  const mask = document.getElementById('sidebar-mask');
+  if (sidebar) sidebar.classList.add('mobile-open');
+  if (mask) mask.classList.add('visible');
+}
+// 窗口尺寸变化时清理移动端展开状态
+window.addEventListener('resize', () => {
+  if (window.innerWidth > 900) closeSidebar();
+});
 
 // ═══════════ DASHBOARD ═══════════
 async function loadDashboard() {
@@ -174,200 +270,86 @@ function updateHeaderStats(cons) {
   document.getElementById('header-stats').textContent = `${running}/${cons.length} 运行`;
 }
 
-// ═══════════ CONTAINER LIST ═══════════
+// ═══════════ CONTAINER WORKSPACE ═══════════
+function containerIPv4(c) {
+  const ips = (c.ipv4 || c.ip || []).filter(ip => ip !== '127.0.0.1');
+  return ips[0] || '未分配 IP 地址';
+}
+
+// 上次成功拉取容器列表的时间（毫秒），用于显示数据新鲜度
+let lastRefreshAt = 0;
+
+function updateRefreshLabel() {
+  const el = document.getElementById('roster-updated');
+  if (!el) return;
+  if (!lastRefreshAt) { el.textContent = '尚未刷新'; return; }
+  const sec = Math.max(0, Math.round((Date.now() - lastRefreshAt) / 1000));
+  el.textContent = sec < 45 ? '刚刚更新'
+    : sec < 3600 ? `${Math.round(sec / 60)} 分钟前更新`
+    : `${Math.round(sec / 3600)} 小时前更新`;
+}
+
+function markRefreshed() {
+  lastRefreshAt = Date.now();
+  updateRefreshLabel();
+}
+
 async function loadContainers() {
-  const grid = document.getElementById('container-grid');
-  const empty = document.getElementById('empty-containers');
-  const badge = document.getElementById('container-count-badge');
-  const loading = document.getElementById('loading-containers');
-  if (loading) loading.style.display = '';
-  grid.innerHTML = '';
-  empty.style.display = 'none';
+  const list = document.getElementById('container-roster');
+  if (!containers.length) list.innerHTML = '<div class="loading-state"><div class="spinner"></div><p>加载容器列表...</p></div>';
   try {
     const r = await lxc('/list');
     containers = r.data || [];
-    badge.textContent = containers.length;
-    // 更新 header 统计
-    updateHeaderStats(containers);
-    if (loading) loading.style.display = 'none';
+    if (!containers.some(c => c.name === currentContainer)) currentContainer = containers[0]?.name || '';
+    markRefreshed();
     renderContainers();
+    if (currentContainer) await openDetail(currentContainer);
+    else renderEmptyWorkspace();
   } catch(e) {
-    if (loading) loading.style.display = 'none';
     toast('加载容器列表失败: ' + e.message, 'error');
-    renderContainers();
+    list.innerHTML = `<div class="workspace-empty"><p>加载失败：${esc(e.message)}</p><button class="btn btn-sm btn-secondary" onclick="loadContainers()">重试</button></div>`;
   }
 }
 
 async function refreshContainers() {
-  // 自动刷新：不清空 DOM，不闪，只更新网络/cpu 数据
   try {
     const r = await lxc('/list');
-    const newData = r.data || [];
-    // 合并新数据到现有容器列表（保持前端选中状态）
-    const selectedNames = new Set(selected);
-    containers = newData.map(nc => {
-      const existing = containers.find(c => c.name === nc.name);
-      if (existing) {
-        // 保留选中状态
-        return { ...nc, _selected: selected.has(nc.name) };
-      }
-      return { ...nc, _selected: false };
-    });
-    // 恢复选中
-    containers.forEach(c => {
-      if (c._selected) selected.add(c.name);
-      else selected.delete(c.name);
-      delete c._selected;
-    });
-    // 增量更新 DOM：只更新速率和 CPU 字段，不重建整个卡片
-    updateContainerCards();
-    document.getElementById('container-count-badge').textContent = containers.length;
-    updateHeaderStats(containers);
-  } catch(e) {
-    // 自动刷新失败静默，不打扰用户
-  }
+    containers = r.data || [];
+    if (!containers.some(c => c.name === currentContainer)) currentContainer = containers[0]?.name || '';
+    markRefreshed();
+    renderContainers();
+    const editing = document.querySelector('#container-detail-body input:focus, #container-detail-body textarea:focus, #container-detail-body select:focus');
+    if (currentContainer && !editing) await showDetailTab(activeDetailTab);
+    else if (!currentContainer) renderEmptyWorkspace();
+  } catch(e) { /* 静默刷新失败不打断当前操作 */ }
 }
 
-function updateContainerCards() {
-  // 增量更新卡片内的实时数据字段，不重建整个 DOM
-  containers.forEach(c => {
-    const card = document.querySelector(`.container-card[data-name="${escAttr(c.name)}"]`);
-    if (!card) return;
-    const rx = c.network_rx_rate > 0 ? fmtRate(c.network_rx_rate) : '-';
-    const tx = c.network_tx_rate > 0 ? fmtRate(c.network_tx_rate) : '-';
-    const cpu = c.cpu_usage > 0 ? c.cpu_usage.toFixed(1) + '%' : '0%';
-    const mem = c.memory_used > 0 ? fmtBytes(c.memory_used) : '-';
-    const disk = c.disk_used > 0 ? fmtDisk(c.disk_used) : '-';
-    card.querySelectorAll('.rate').forEach(el => {
-      if (el.closest('.meta-item').querySelector('.meta-label').textContent.includes('↓')) el.textContent = rx;
-      else el.textContent = tx;
-    });
-    const chipRow = card.querySelector('.meta-row.bottom');
-    if (chipRow) {
-      chipRow.innerHTML = `
-        <span class="meta-chip">CPU ${cpu}</span>
-        <span class="meta-chip">内存 ${mem}</span>
-        <span class="meta-chip">磁盘 ${disk}</span>
-        <span class="meta-chip chip-zfs">${c.backend_type === 'dir' ? 'DIR' : 'btrfs'}</span>
-        <span class="meta-chip">快照 ${c.snapshots || 0}</span>
-        <span class="meta-chip">备份 ${c.backups || 0}</span>`;
-    }
-  });
-}
-
-function escAttr(s) { return s.replace(/"/g, '&quot;'); }
-
-function filterContainers() { renderContainers(); }
-
-function setFilter(state) {
-  filterState = state;
-  document.querySelectorAll('.filter-tab').forEach(b =>
-    b.classList.toggle('active', b.dataset.filter === state));
-  renderContainers();
-}
-
-function gotoContainers(state) { setFilter(state); switchTab('containers'); }
+function updateContainerCards() { renderContainers(); }
 
 function renderContainers() {
-  const grid = document.getElementById('container-grid');
-  const empty = document.getElementById('empty-containers');
-  const q = (document.getElementById('search-containers').value || '').toLowerCase();
-  const filtered = containers.filter(c => {
-    const matchState = !filterState || c.state === filterState;
-    const matchName = c.name.toLowerCase().includes(q);
-    return matchState && matchName;
-  });
-  if (filtered.length === 0) {
-    grid.innerHTML = '';
-    empty.style.display = containers.length === 0 ? 'block' : 'none';
-    if (containers.length > 0) {
-      empty.querySelector('h3').textContent = '未找到匹配的容器';
-      empty.querySelector('p').textContent = `没有名称包含 "${esc(q)}" 的容器`;
-    }
-    return;
-  }
-  empty.style.display = 'none';
-  grid.innerHTML = filtered.map(c => {
-    const rx = c.network_rx_rate > 0 ? fmtRate(c.network_rx_rate) : '-';
-    const tx = c.network_tx_rate > 0 ? fmtRate(c.network_tx_rate) : '-';
-    const ipv4 = c.ipv4 && c.ipv4.length ? c.ipv4.filter(ip => ip !== '127.0.0.1').join(', ') : '-';
-    const ipv6 = c.ipv6 && c.ipv6.length ? c.ipv6.join(', ') : '-';
-    const mem = c.memory_used > 0 ? fmtBytes(c.memory_used) : '-';
-    const disk = c.disk_used > 0 ? fmtDisk(c.disk_used) : '-';
-    const cpu = c.cpu_usage > 0 ? c.cpu_usage.toFixed(1) + '%' : '0%';
-    return `
-    <div class="container-card ${selected.has(c.name) ? 'selected' : ''}" data-name="${escAttr(c.name)}">
-      <div class="container-card-header">
-        <label class="checkbox-label">
-          <input type="checkbox" ${selected.has(c.name) ? 'checked' : ''} onchange="toggleSel('${esc(c.name)}')">
-        </label>
-        <span class="container-name" onclick="openDetail('${jsEscape(c.name)}')">${esc(c.name)}</span>
-        <span class="status-badge status-${c.state}">${fmtState(c.state)}</span>
-        <span class="backend-badge backend-zfs">${c.backend_type === 'dir' ? 'DIR' : 'btrfs'}</span>
-      </div>
-      ${c.description ? `<div class="container-desc">${esc(c.description)}</div>` : ''}
-      <div class="container-meta">
-        <div class="meta-row">
-          <div class="meta-item"><span class="meta-label">IPv4</span><span class="meta-value ipv4">${ipv4}</span></div>
-          <div class="meta-item right"><span class="meta-label">↓RX</span><span class="meta-value rate">${rx}</span></div>
-        </div>
-        <div class="meta-row">
-          <div class="meta-item"><span class="meta-label">IPv6</span><span class="meta-value ipv6">${ipv6}</span></div>
-          <div class="meta-item right"><span class="meta-label">↑TX</span><span class="meta-value rate">${tx}</span></div>
-        </div>
-        <div class="meta-row bottom">
-          <span class="meta-chip">CPU ${cpu}</span>
-          <span class="meta-chip">内存 ${mem}</span>
-          <span class="meta-chip">磁盘 ${disk}</span>
-          <span class="meta-chip chip-zfs">${c.backend_type === 'dir' ? 'DIR' : 'btrfs'}</span>
-          <span class="meta-chip">快照 ${c.snapshots || 0}</span>
-          <span class="meta-chip">备份 ${c.backups || 0}</span>
-        </div>
-      </div>
-      <div class="container-actions">
-        ${c.state === 'running' ? `
-          <button class="btn btn-sm btn-terminal" onclick="openTerminal('${jsEscape(c.name)}')" title="终端">⎇ 终端</button>
-          <button class="btn btn-sm btn-warning" onclick="act('${jsEscape(c.name)}','stop')">⏹ 停止</button>
-          <button class="btn btn-sm btn-secondary" onclick="act('${jsEscape(c.name)}','restart')">🔄 重启</button>
-          <button class="btn btn-sm btn-secondary" onclick="act('${jsEscape(c.name)}','freeze')">❄️ 冻结</button>` : c.state === 'frozen' ? `
-          <button class="btn btn-sm btn-success" onclick="act('${jsEscape(c.name)}','unfreeze')">▶ 解冻</button>
-          <button class="btn btn-sm btn-danger" onclick="delContainer('${jsEscape(c.name)}')">🗑 删除</button>` : `
-          <button class="btn btn-sm btn-success" onclick="act('${jsEscape(c.name)}','start')">▶ 启动</button>
-          <button class="btn btn-sm btn-danger" onclick="delContainer('${jsEscape(c.name)}')">🗑 删除</button>`}
-        <button class="btn btn-sm btn-ghost" onclick="openDetail('${jsEscape(c.name)}')" title="详情">ℹ️</button>
-      </div>
-    </div>`;
-  }).join('');
-  updateBatchUI();
+  containers.sort((a, b) => a.name.localeCompare(b.name));
+  document.getElementById('container-count-badge').textContent = containers.length;
+  document.getElementById('roster-count').textContent = containers.length;
+  updateRefreshLabel();
+  updateHeaderStats(containers);
+  const list = document.getElementById('container-roster');
+  list.innerHTML = containers.length ? containers.map(c => `
+    <button type="button" class="roster-item ${c.name === currentContainer ? 'active' : ''}" data-name="${escAttr(c.name)}" onclick="openDetail('${jsEscape(c.name)}')" role="option" aria-selected="${c.name === currentContainer}">
+      <span class="status-dot roster-state ${stateClass(c.state)}"></span>
+      <span class="roster-item-main"><span class="roster-name">${esc(c.name)}</span><span class="roster-ip">${esc(containerIPv4(c))}</span></span>
+      <span class="roster-state-label">${fmtState(c.state)}</span>
+    </button>`).join('') : '<div class="workspace-empty"><p>还没有容器</p><button class="btn btn-sm btn-primary" onclick="switchTab(&quot;create&quot;)">创建容器</button></div>';
 }
 
-// ═══════════ Selection & Batch ═══════════
-function toggleSel(name) {
-  if (selected.has(name)) selected.delete(name); else selected.add(name);
-  renderContainers();
+function renderEmptyWorkspace() {
+  currentContainer = '';
+  detailRequestId++;
+  document.getElementById('container-detail').innerHTML = '<div class="workspace-empty"><div class="empty-icon">▣</div><h3>创建你的第一个容器</h3><p>容器创建后，可在这里直接管理配置、网络与备份</p><button class="btn btn-primary" onclick="switchTab(&quot;create&quot;)">创建容器</button></div>';
 }
-function updateBatchUI() {
-  const n = selected.size;
-  document.getElementById('batch-info').style.display = n ? 'inline' : 'none';
-  document.getElementById('batch-info').textContent = `已选 ${n} 个`;
-  ['btn-batch-start','btn-batch-stop','btn-batch-delete'].forEach(id =>
-    document.getElementById(id).style.display = n ? 'inline-flex' : 'none');
-}
-async function batchStart() {
-  for (const n of [...selected]) await act(n, 'start', true);
-  selected.clear(); loadContainers();
-}
-async function batchStop() {
-  for (const n of [...selected]) await act(n, 'stop', true);
-  selected.clear(); loadContainers();
-}
-async function batchDelete() {
-  const names = [...selected];
-  confirm(`确定要删除 ${names.length} 个容器吗？`, async () => {
-    for (const n of names) await delContainer(n, true);
-    selected.clear(); loadContainers();
-  });
-}
+
+function gotoContainers(state) { switchTab('containers'); }
+
+function escAttr(s) { return esc(String(s)).replace(/"/g, '&quot;'); }
 
 async function act(name, action, silent = false) {
   try {
@@ -466,7 +448,7 @@ let termInstance = null, termSocket = null, terminalName = '';
 function openTerminal(name) {
   terminalName = name;
   document.getElementById('terminal-title').textContent = '终端: ' + name;
-  document.getElementById('terminal-modal').classList.add('active');
+  ModalManager.open('terminal-modal');
   document.getElementById('webshell-output').textContent = '';
   switchTermMode('pty');
 
@@ -564,7 +546,7 @@ function closeTerminal() {
     termSocket.close();
     termSocket = null;
   }
-  document.getElementById('terminal-modal').classList.remove('active');
+  ModalManager.close('terminal-modal');
   terminalName = '';
   // Reset to PTY mode for next open
   currentTermMode = 'pty';
@@ -615,32 +597,60 @@ async function execCommand() {
   output.parentElement.scrollTop = output.parentElement.scrollHeight;
 }
 
-// ═══════════ CONTAINER DETAIL MODAL ═══════════
+// ═══════════ CONTAINER DETAIL WORKSPACE ═══════════
 let detailOpen = false;
+const DETAIL_TABS = [
+  ['info', '概览'], ['settings', '设置'], ['network', '网络'], ['data', '数据']
+];
+const DETAIL_TAB_ALIASES = { config: 'settings', limits: 'settings', meta: 'settings', snapshots: 'data', backups: 'data' };
 
-function openDetail(name) {
+function detailActions(c) {
+  const name = jsEscape(c.name);
+  const primary = c.state === 'running'
+    ? `<button class="btn btn-sm btn-primary" onclick="act('${name}','restart')">↻ 重启</button><button class="btn btn-sm btn-secondary" onclick="act('${name}','stop')">■ 停止</button>`
+    : c.state === 'frozen'
+      ? `<button class="btn btn-sm btn-success" onclick="act('${name}','unfreeze')">▶ 解冻</button>`
+      : `<button class="btn btn-sm btn-success" onclick="act('${name}','start')">▶ 启动</button>`;
+  return `${primary}<button class="btn btn-sm btn-secondary" onclick="openTerminal('${name}')">&gt;_ 终端</button><button class="btn btn-sm btn-ghost" onclick="toggleMoreActions()" aria-label="更多操作" title="更多操作">•••</button>`;
+}
+
+async function openDetail(name, tab = 'info') {
+  if (!containers.some(c => c.name === name)) return;
   currentContainer = name;
+  activeDetailTab = tab;
   detailOpen = true;
-  const content = document.getElementById('modal-content');
-  content.innerHTML = `
-    <div class="modal-header">
-      <h3 id="modal-title">容器: ${esc(name)}</h3>
-      <span id="modal-status-badge" class="container-status running"><span class="status-dot"></span>运行中</span>
-      <button class="modal-close" onclick="closeModal()">✕</button>
-    </div>
-    <div class="detail-tabs">
-      <button class="detail-tab active" onclick="showDetailTab('info')">信息</button>
-      <button class="detail-tab" onclick="showDetailTab('meta')">元数据</button>
-      <button class="detail-tab" onclick="showDetailTab('config')">配置</button>
-      <button class="detail-tab" onclick="showDetailTab('snapshots')">快照</button>
-      <button class="detail-tab" onclick="showDetailTab('backups')">备份</button>
-      <button class="detail-tab" onclick="showDetailTab('network')">网络</button>
-      <button class="detail-tab" onclick="showDetailTab('limits')">资源</button>
-    </div>
-    <div id="modal-body" class="modal-body"></div>
-  `;
-  document.getElementById('container-modal').classList.add('active');
-  showDetailTab('info');
+  renderContainers();
+  const c = containers.find(c => c.name === name);
+  const panel = document.getElementById('container-detail');
+  panel.innerHTML = `
+    <header class="workspace-detail-header">
+      <div class="workspace-identity">
+        <div class="workspace-icon">▣</div>
+        <div class="workspace-name-block">
+          <div class="workspace-name-row"><h2 class="workspace-name">${esc(c.name)}</h2><span class="container-status workspace-status ${stateClass(c.state)}"><span class="status-dot"></span>${fmtState(c.state)}</span></div>
+          <div class="workspace-subtitle">${esc([c.os, c.release, c.arch].filter(Boolean).join(' · ') || 'LXC 容器')}</div>
+        </div>
+      </div>
+      <div class="workspace-actions">${detailActions(c)}</div>
+    </header>
+    <nav class="workspace-tabs" aria-label="容器详情标签">
+      ${DETAIL_TABS.map(([id, label]) => `<button class="workspace-tab ${id === tab ? 'active' : ''}" data-tab="${id}" onclick="showDetailTab('${id}')">${label}</button>`).join('')}
+    </nav>
+    <div id="container-detail-body" class="workspace-detail-body"><div class="loading-state"><div class="spinner"></div><p>加载容器详情...</p></div></div>`;
+  await showDetailTab(tab);
+}
+
+function toggleMoreActions() {
+  const c = containers.find(c => c.name === currentContainer);
+  if (!c) return;
+  const name = jsEscape(c.name);
+  const actions = `${c.state === 'running' ? `<button class="btn btn-sm btn-secondary" onclick="act('${name}','freeze')">冻结</button>` : ''}<button class="btn btn-sm btn-secondary" onclick="openMigrateModal('${name}')">迁移</button><button class="btn btn-sm btn-danger" onclick="delContainer('${name}')">删除容器</button>`;
+  const existing = document.querySelector('.workspace-more-actions');
+  if (existing) { existing.remove(); return; }
+  const row = document.createElement('div');
+  row.className = 'workspace-more-actions workspace-secondary-actions';
+  row.innerHTML = actions;
+  document.querySelector('.workspace-detail-header').after(row);
 }
 
 // 容器创建/恢复完成后轮询直到拿到 IPv4，再刷新列表显示
@@ -668,71 +678,84 @@ async function _pollContainerIp(name, attempt = 0) {
 }
 
 async function showDetailTab(tab) {
-  document.querySelectorAll('.detail-tab').forEach(b => b.classList.toggle('active', b.textContent.includes(
-    { info: '信息', meta: '元数据', config: '配置', snapshots: '快照', backups: '备份', network: '网络', limits: '资源' }[tab])));
-  const body = document.getElementById('modal-body');
+  tab = DETAIL_TAB_ALIASES[tab] || tab;
+  if (!currentContainer || !DETAIL_TABS.some(([id]) => id === tab)) return;
+  activeDetailTab = tab;
+  document.querySelectorAll('.workspace-tab').forEach(b => b.classList.toggle('active', b.dataset.tab === tab));
+  const body = document.getElementById('container-detail-body');
+  if (!body) return;
+  const requestId = ++detailRequestId;
+  const containerName = currentContainer;
+  const bodyStillCurrent = () => requestId === detailRequestId && currentContainer === containerName && body.isConnected;
   body.innerHTML = '<div class="loading-state"><div class="spinner"></div><p>加载中...</p></div>';
   try {
     switch(tab) {
-      case 'info': await renderDetailInfo(body); break;
-      case 'meta': await renderDetailMeta(body); break;
-      case 'config': await renderDetailConfig(body); break;
-      case 'snapshots': await renderDetailSnapshots(body); break;
-      case 'backups': await renderDetailBackups(body); break;
-      case 'network': await renderDetailNetwork(body); break;
-      case 'limits': await renderDetailLimits(body); break;
-      default: body.innerHTML = '<p style="padding:20px;color:var(--text-dim);">未知标签</p>';
+      case 'info': await renderDetailInfo(body, requestId, containerName); break;
+      case 'settings': await renderDetailSettings(body, requestId, containerName); break;
+      case 'network': await renderDetailNetwork(body, requestId, containerName); break;
+      case 'data': await renderDetailData(body, requestId, containerName); break;
     }
   } catch(e) {
-    body.innerHTML = `<div class="empty-state"><p>加载失败: ${esc(e.message)}</p></div>`;
+    if (requestId === detailRequestId) body.innerHTML = `<div class="empty-state"><p>加载失败: ${esc(e.message)}</p><button class="btn btn-sm btn-secondary" onclick="showDetailTab('${tab}')">重试</button></div>`;
+  }
+  if (requestId !== detailRequestId || currentContainer !== containerName) {
+    // 较晚返回的请求不能覆盖用户已切换的新容器/标签
+    if (currentContainer === containerName && activeDetailTab !== tab) showDetailTab(activeDetailTab);
   }
 }
 
-async function renderDetailInfo(body) {
-  const r = await lxc(`/${encodeURIComponent(currentContainer)}/info`);
-  const c = r.data;
-  document.getElementById('modal-status-badge').className = `container-status ${stateClass(c.state)}`;
-  document.getElementById('modal-status-badge').innerHTML = `<span class="status-dot"></span>${fmtState(c.state)}`;
+function propertyRow(label, value) {
+  return `<div class="property-row"><span class="property-label">${label}</span><span class="property-value">${value}</span></div>`;
+}
+
+async function renderDetailInfo(body, requestId = detailRequestId, containerName = currentContainer) {
+  const bodyStillCurrent = () => requestId === detailRequestId && currentContainer === containerName && body.isConnected;
+  const [info, backupsResult] = await Promise.all([
+    lxc(`/${encodeURIComponent(currentContainer)}/info`),
+    lxc(`/${encodeURIComponent(currentContainer)}/backups`).catch(() => ({ data: [] }))
+  ]);
+  const c = info.data;
+  const backups = backupsResult.data || [];
+  const latestBackup = backups.slice().sort((a, b) => new Date(b.created_at || 0) - new Date(a.created_at || 0))[0];
+  const name = jsEscape(currentContainer);
+  if (!bodyStillCurrent()) return;
+  const cpu = Number(c.cpu_usage || 0);
+  const mem = Number(c.memory_used || 0), memLimit = Number(c.memory_limit || 0);
+  const memPct = memLimit > 0 ? Math.min(100, mem / memLimit * 100) : 0;
+  const ipv4 = (c.ipv4 || c.ip || []).filter(ip => ip !== '127.0.0.1').join(', ') || '-';
+  const webui = c.webui_url ? `<a href="${escAttr(c.webui_url)}" target="_blank" rel="noopener">打开容器 Web UI ↗</a>` : '未配置';
   body.innerHTML = `
-    <div class="detail-section">
-      <table class="detail-table">
-        <tr><td>状态</td><td><span class="container-status ${stateClass(c.state)}"><span class="status-dot"></span>${fmtState(c.state)}</span></td></tr>
-        <tr><td>PID</td><td>${c.pid || '-'}</td></tr>
-        <tr><td>存储后端</td><td><span class="backend-badge backend-zfs">${c.backend_type === 'dir' ? 'DIR' : 'btrfs'}</span>${c.zfs_dataset ? ` · <code>${esc(c.zfs_dataset)}</code>` : ''}</td></tr>
-        <tr><td>权限模式</td><td>${c.privileged
-          ? '<span class="badge">特权</span> <span style="color:var(--text-dim);font-size:12px">容器内 root = 宿主 root</span>'
-          : '<span class="badge" style="background:#2ea043">无特权</span> <span style="color:var(--text-dim);font-size:12px">容器 uid 映射到宿主 100000 起</span>'}</td></tr>
-        <tr><td>IP 地址</td><td>${c.ip && c.ip.length ? c.ip.join(', ') : '-'}</td></tr>
-        <tr><td>系统</td><td>${c.os || '-'} ${c.release || ''}</td></tr>
-        <tr><td>架构</td><td>${c.arch || '-'}</td></tr>
-        <tr><td>自启动</td><td>${c.autostart ? '✅ 是' : '❌ 否'}</td></tr>
-        <tr><td>描述</td><td>${c.description || '-'}</td></tr>
-      </table>
-    </div>
-    <div class="detail-section">
-      <h4>资源使用</h4>
-      <div class="resource-bars">
-        <div class="resource-bar-item"><span class="rb-label">内存</span><span class="rb-val">${fmtBytes(c.memory_used)} / ${fmtBytes(c.memory_limit)}</span></div>
-        <div class="resource-bar-item"><span class="rb-label">CPU</span><span class="rb-val">${c.cpu_usage > 0 ? c.cpu_usage.toFixed(1) + '%' : '0%'}</span></div>
-        <div class="resource-bar-item"><span class="rb-label">进程</span><span class="rb-val">${c.processes || '-'}</span></div>
-        <div class="resource-bar-item"><span class="rb-label">快照</span><span class="rb-val">${c.snapshots || 0}</span></div>
-        <div class="resource-bar-item"><span class="rb-label">网络 RX</span><span class="rb-val">${fmtBytes(c.network_rx)}</span></div>
-        <div class="resource-bar-item"><span class="rb-label">网络 TX</span><span class="rb-val">${fmtBytes(c.network_tx)}</span></div>
+    <section class="overview-section">
+      <div class="overview-section-head"><h3>运行概览</h3><span class="overview-hint">${esc(c.uptime || '容器未运行')}</span></div>
+      <div class="overview-metrics">
+        <div class="overview-metric"><div class="metric-label">CPU 使用率</div><div class="metric-value">${cpu.toFixed(1)}<small>%</small></div><div class="metric-track"><div class="metric-fill" style="width:${Math.min(100, cpu)}%"></div></div></div>
+        <div class="overview-metric"><div class="metric-label">内存</div><div class="metric-value">${fmtBytes(mem)}<small>${memLimit ? ' / ' + fmtBytes(memLimit) : ''}</small></div><div class="metric-track"><div class="metric-fill green" style="width:${memPct}%"></div></div></div>
+        <div class="overview-metric"><div class="metric-label">存储</div><div class="metric-value">${fmtDisk(c.disk_used)}</div><div class="metric-track"><div class="metric-fill green" style="width:${memPct}%"></div></div></div>
+        <div class="overview-metric"><div class="metric-label">进程</div><div class="metric-value">${c.processes || 0}</div><div class="metric-label">${esc(c.state === 'running' ? '正在运行' : '当前未运行')}</div></div>
       </div>
-    </div>
-    <div class="detail-section">
-      <h4>操作</h4>
-      <div class="action-group">
-        ${c.state !== 'running' ? `<button class="btn btn-success" onclick="act('${jsEscape(currentContainer)}','start');showDetailTab('info')">▶ 启动</button>` : ''}
-        ${c.state === 'running' ? `<button class="btn btn-warning" onclick="act('${jsEscape(currentContainer)}','stop');showDetailTab('info')">⏹ 停止</button>` : ''}
-        <button class="btn btn-secondary" onclick="act('${jsEscape(currentContainer)}','restart');showDetailTab('info')">🔄 重启</button>
-        ${c.state === 'running' ? `<button class="btn btn-secondary" onclick="act('${jsEscape(currentContainer)}','freeze');showDetailTab('info')">❄️ 冻结</button>` : ''}
-        <button class="btn btn-danger" onclick="delContainer('${jsEscape(currentContainer)}')">🗑 删除</button>
-        <button class="btn btn-secondary" onclick="showDetailTab('snapshots')">📸 快照</button>
-        <button class="btn btn-secondary" onclick="showDetailTab('backups')">💾 备份</button>
-        <button class="btn btn-secondary" onclick="showDetailTab('network')">🌐 网络</button>
-        <button class="btn btn-secondary" onclick="openTerminal('${jsEscape(currentContainer)}')">⎇ 终端</button>
-      </div>
+    </section>
+    <div class="overview-grid">
+      <section class="overview-block">
+        <div class="overview-block-head"><h3>基本信息</h3><button class="btn btn-sm btn-ghost" onclick="showDetailTab('settings')">编辑设置</button></div>
+        <div class="overview-properties">
+          ${propertyRow('IPv4 地址', esc(ipv4))}
+          ${propertyRow('MAC 地址', `<code>${esc(c.mac || '-')}</code>`)}
+          ${propertyRow('权限模式', c.privileged ? '特权容器' : '无特权容器')}
+          ${propertyRow('Web 服务', webui)}
+          ${propertyRow('创建时间', esc(fmtDate(c.created_at)))}
+          ${propertyRow('运行时长', esc(c.uptime || '-'))}
+          ${propertyRow('进程 / 快照', `${c.processes || 0} / ${c.snapshots || 0}`)}
+        </div>
+      </section>
+      <section class="overview-block">
+        <div class="overview-block-head"><h3>最近数据保护</h3><span class="overview-hint">${backups.length} 个备份 · ${c.snapshots || 0} 个快照</span></div>
+        <div class="overview-properties">
+          ${propertyRow('最近备份', esc(latestBackup ? fmtDate(latestBackup.created_at) : '暂无备份'))}
+          ${propertyRow('备份大小', latestBackup ? fmtBytes(latestBackup.size) : '-')}
+          ${propertyRow('可用快照', `${c.snapshots || 0} 个`)}
+        </div>
+        <div class="overview-actions"><button class="btn btn-sm btn-secondary" onclick="createSnapshot()">＋ 创建快照</button><button class="btn btn-sm btn-secondary" onclick="createBackup()">▣ 立即备份</button><button class="btn btn-sm btn-ghost" onclick="showDetailTab('data')">查看全部</button></div>
+      </section>
     </div>`;
 }
 
@@ -773,7 +796,7 @@ async function saveMetaDesc() {
   catch(e) { toast('更新失败: ' + e.message, 'error'); }
 }
 async function delMetaDesc() {
-  try { await lxc(`/${encodeURIComponent(currentContainer)}/description`, 'DELETE'); toast('描述已删除', 'success'); showDetailTab('meta'); }
+  try { await lxc(`/${encodeURIComponent(currentContainer)}/description`, 'DELETE'); toast('描述已删除', 'success'); showDetailTab('info'); }
   catch(e) { toast('删除失败: ' + e.message, 'error'); }
 }
 async function saveMetaAutostart() {
@@ -790,6 +813,53 @@ async function saveMetaOrder() {
   const v = parseInt(document.getElementById('meta-order').value) || 0;
   try { await lxc(`/${encodeURIComponent(currentContainer)}/order`, 'PUT', { order: v }); toast('排序已更新', 'success'); }
   catch(e) { toast('更新失败: ' + e.message, 'error'); }
+}
+
+async function renderDetailSettings(body, requestId = detailRequestId, containerName = currentContainer) {
+  const bodyStillCurrent = () => requestId === detailRequestId && currentContainer === containerName && body.isConnected;
+  const r = await lxc(`/${encodeURIComponent(currentContainer)}/info`);
+  const c = r.data;
+  const cfgRes = await lxc(`/${encodeURIComponent(currentContainer)}/config`).catch(() => ({ data: [] }));
+  const cfgLines = cfgRes.data || [];
+  if (!bodyStillCurrent()) return;
+  // 从原始 cgroup 配置回读真实限制值，保证输入框与配置一致
+  let cpuLimit = 0, memLimit = 0;
+  for (const line of cfgLines) {
+    let m;
+    if ((m = line.match(/^lxc\.cgroup2\.memory\.max\s*=\s*(\d+)M/))) memLimit = Number(m[1]);
+    else if ((m = line.match(/^lxc\.cgroup\.memory\.limit_in_bytes\s*=\s*(\d+)/))) memLimit = Math.round(Number(m[1]) / (1024 * 1024));
+    else if ((m = line.match(/^lxc\.cgroup2?\.cpuset\.cpus\s*=\s*([\d,\-]+)/)))
+      cpuLimit = m[1].split(',').reduce((n, p) => n + (p.includes('-') ? Number(p.split('-')[1]) - Number(p.split('-')[0]) + 1 : 1), 0);
+    else if ((m = line.match(/^lxc\.cgroup2\.cpu\.max\s*=\s*(\d+)\s+\d+/)) && Number(m[1]) > 0)
+      cpuLimit = Math.max(1, Math.round(Number(m[1]) / 100000));
+  }
+  if (!cpuLimit) cpuLimit = c.cpu_limit || c.cpu_cores || 1;
+  if (!memLimit) memLimit = c.memory_limit ? Math.round(c.memory_limit / (1024 * 1024)) : 512;
+  body.innerHTML = `
+    <div class="overview-section-head"><h3>容器设置</h3><span class="overview-hint">配置与资源集中管理</span></div>
+    <div class="settings-grid">
+      <section class="settings-card"><h3>基础配置</h3><p>容器参数与启动策略，更改即时保存。</p>
+        <div class="property-row"><span class="property-label">自动启动</span><span class="property-value"><label class="toggle"><input type="checkbox" id="meta-autostart" ${c.autostart ? 'checked' : ''} onchange="saveMetaAutostart()"><span class="toggle-slider"></span></label></span></div>
+        <div class="property-row"><label class="property-label" for="meta-order">启动顺序</label><span class="property-value"><input type="number" id="meta-order" class="compact-order" value="${c.container_order || 0}" min="0" onchange="saveMetaOrder()"></span></div>
+        <div class="property-row"><label class="property-label" for="meta-desc">容器描述</label><span class="property-value description-value"><input type="text" id="meta-desc" value="${escAttr(c.description || '')}" placeholder="添加容器描述" onchange="saveMetaDesc()"></span></div>
+        <div class="overview-actions"><button class="btn btn-sm btn-secondary" onclick="toggleRawConfig()">查看原始配置</button><button class="btn btn-sm btn-secondary" onclick="cloneContainer('${jsEscape(currentContainer)}')">⧉ 克隆</button></div>
+        <div id="raw-config" hidden><div class="loading-state"><div class="spinner"></div></div></div>
+      </section>
+      <section class="settings-card"><h3>资源限制</h3><p>修改后重启容器生效。</p>
+        <div class="resource-field"><label for="limits-cpu">CPU 核心数</label><div class="number-input"><input type="number" id="limits-cpu" min="1" max="16" step="1" value="${cpuLimit}"><span>核</span></div><div class="range-hint">可设置 1–16 核</div></div>
+        <div class="resource-field"><label for="limits-mem">内存上限</label><div class="number-input"><input type="number" id="limits-mem" min="64" max="16384" step="1" value="${memLimit}"><span>MB</span></div><div class="range-hint">可设置 64–16384 MB</div></div>
+        <div class="overview-actions"><button class="btn btn-sm btn-primary" onclick="saveLimits()">保存限制</button></div>
+      </section>
+    </div>`;
+}
+
+async function toggleRawConfig() {
+  const panel = document.getElementById('raw-config');
+  if (!panel) return;
+  if (!panel.hidden) { panel.hidden = true; return; }
+  panel.hidden = false;
+  try { await renderDetailConfig(panel); }
+  catch (e) { panel.innerHTML = `<div class="empty-state"><p>${esc(e.message)}</p></div>`; }
 }
 
 async function renderDetailConfig(body) {
@@ -814,6 +884,27 @@ async function saveConfig() {
     await lxc(`/${encodeURIComponent(currentContainer)}/config`, 'PUT', { updates });
     toast('配置已保存', 'success');
   } catch(e) { toast('保存失败: ' + e.message, 'error'); }
+}
+
+async function renderDetailData(body, requestId = detailRequestId, containerName = currentContainer) {
+  const bodyStillCurrent = () => requestId === detailRequestId && currentContainer === containerName && body.isConnected;
+  const [snapshotsResult, backupsResult] = await Promise.all([
+    lxc(`/${encodeURIComponent(currentContainer)}/snapshots`),
+    lxc(`/${encodeURIComponent(currentContainer)}/backups`)
+  ]);
+  const snaps = snapshotsResult.data || [];
+  const backups = backupsResult.data || [];
+  const records = [
+    ...snaps.map(s => ({ type: 'snapshot', name: s.name, created: s.created_at, size: 0 })),
+    ...backups.map(b => ({ type: 'backup', name: b.filename, created: b.created_at, size: b.size }))
+  ].sort((a, b) => new Date(b.created || 0) - new Date(a.created || 0));
+  if (!bodyStillCurrent()) return;
+  body.innerHTML = `
+    <div class="overview-section-head"><h3>数据保护</h3><div class="overview-actions"><button class="btn btn-sm btn-secondary" onclick="createSnapshot()">创建快照</button><button class="btn btn-sm btn-primary" onclick="createBackup()">立即备份</button></div></div>
+    ${records.length === 0 ? '<div class="workspace-empty"><p>暂无快照或备份</p></div>' : `<div class="data-records">${records.map(item => `
+      <div class="data-record"><span class="data-type">${item.type === 'snapshot' ? '快照' : '备份'}</span><div class="data-record-main"><strong>${esc(item.name)}</strong><span>${esc(item.created ? fmtDate(item.created) : '时间未知')}${item.type === 'backup' ? ' · ' + fmtBytes(item.size) : ''}</span></div><div class="data-record-actions">${item.type === 'snapshot'
+        ? `<button class="btn btn-sm btn-success" onclick="restoreSnapshot('${jsEscape(item.name)}')">恢复</button><button class="btn btn-sm btn-danger" onclick="deleteSnapshot('${jsEscape(item.name)}')">删除</button><button class="btn btn-sm btn-secondary" onclick="cloneFromSnapshot('${jsEscape(item.name)}')">克隆</button>`
+        : `<button class="btn btn-sm btn-success" onclick="restoreBackup('${jsEscape(item.name)}')">恢复</button><button class="btn btn-sm btn-danger" onclick="deleteBackup('${jsEscape(item.name)}')">删除</button>`}</div></div>`).join('')}</div>`}`;
 }
 
 async function renderDetailSnapshots(body) {
@@ -901,11 +992,14 @@ async function renderDetailBackups(body) {
 }
 
 // ═══════════ NETWORK ═══════════
-async function renderDetailNetwork(body) {
+async function renderDetailNetwork(body, requestId = detailRequestId, containerName = currentContainer) {
+  const isCurrent = () => requestId === detailRequestId && currentContainer === containerName && body.isConnected;
   const info = await lxc('/' + encodeURIComponent(currentContainer) + '/info');
   const c = info.data;
-  const config = await lxc('/' + encodeURIComponent(currentContainer) + '/config');
+  if (!isCurrent()) return;
+  const config = await lxc('/' + encodeURIComponent(currentContainer) + '/config').catch(e => ({ locked: true, message: e.message }));
   const cfgLines = config.data || [];
+  if (!isCurrent()) return;
 
   let netType = 'veth', netLink = 'lxcbr0', netHwaddr = '', netFlags = 'up';
   for (const line of cfgLines) {
@@ -917,17 +1011,20 @@ async function renderDetailNetwork(body) {
 
   body.innerHTML =
     '<div class="detail-section">' +
-      '<h4>网络配置 (lxc.net.0)</h4>' +
+      '<h4>网络连接</h4>' +
       '<div class="info-card">' +
         '<table class="info-table">' +
+          '<tr><td>容器 IP</td><td><code>' + esc((c.ipv4 || c.ip || []).join(', ') || '-') + '</code></td></tr>' +
+          '<tr><td>IPv6 地址</td><td><code>' + esc((c.ipv6 || []).join(', ') || '未分配') + '</code></td></tr>' +
+          (config.locked ? '<tr><td>网络配置</td><td>' + esc(config.message) + '</td></tr>' : '') +
           '<tr><td>当前模式</td><td><code>' + esc(netType) + '</code></td></tr>' +
           '<tr><td>桥接/链路</td><td><code>' + esc(netLink) + '</code></td></tr>' +
           '<tr><td>MAC 地址</td><td>' + (netHwaddr ? '<code>' + esc(netHwaddr) + '</code>' : '-') + '</td></tr>' +
-          '<tr><td>容器 IP</td><td>' + (c.ip && c.ip.length ? c.ip.join(', ') : '-') + '</td></tr>' +
+          '<tr><td>容器 IP</td><td><code>' + esc((c.ipv4 || c.ip || []).join(', ') || '-') + '</code></td></tr>' +
         '</table>' +
       '</div>' +
     '</div>' +
-    '<div class="detail-section">' +
+    (config.locked ? '' : '<div class="detail-section">' +
       '<h4>切换网络模式</h4>' +
       '<div class="info-card">' +
         '<div style="display:flex;align-items:center;gap:12px;flex-wrap:wrap;">' +
@@ -946,7 +1043,7 @@ async function renderDetailNetwork(body) {
           '切换后需重启容器生效。桥接模式由路由器直接分配 IPv4/IPv6（与宿主机同网段）。' +
         '</p>' +
       '</div>' +
-    '</div>';
+    '</div>');
 }
 
 async function applyNetworkMode(name) {
@@ -1029,11 +1126,15 @@ async function renderDetailLimits(body) {
 }
 
 async function saveLimits() {
-  const cpu = parseInt(document.getElementById('limits-cpu').value);
-  const memMB = parseInt(document.getElementById('limits-mem').value);
+  const cpu = Number(document.getElementById('limits-cpu').value);
+  const memMB = Number(document.getElementById('limits-mem').value);
+  if (!Number.isInteger(cpu) || cpu < 1 || cpu > 16 || !Number.isInteger(memMB) || memMB < 64 || memMB > 16384) {
+    toast('请输入有效的 CPU 核数（1–16）和内存（64–16384 MB）', 'error');
+    return;
+  }
   const memBytes = memMB * 1024 * 1024;
   try {
-    await lxc(`/${encodeURIComponent(currentContainer)}/limits`, 'PUT', { cpu_limit: cpu, memory_limit: memBytes });
+    await lxc(`/${encodeURIComponent(currentContainer)}/limits`, 'PUT', { cpu: String(cpu), memory: String(memMB) });
     toast('资源限制已更新，请重启容器生效', 'success');
     showDetailTab('info');
   } catch(e) {
@@ -1145,6 +1246,13 @@ function startBackupPoll(name) {
     });
   };
   backupPollTimer = setTimeout(poll, 1500);
+}
+
+async function cloneContainer(name) {
+  switchTab('create');
+  await switchCreateTab('clone');
+  document.getElementById('clone-source').value = name;
+  document.getElementById('clone-name').value = name + '-clone';
 }
 
 async function createBackup() {
@@ -1322,9 +1430,7 @@ async function deleteBackup(file) {
 }
 
 function closeModal() {
-  document.getElementById('container-modal').classList.remove('active');
-  detailOpen = false;
-  currentContainer = '';
+  // 详情不再使用弹窗，保留此函数兼容现有操作流程。
 }
 
 // ═══════════ CREATE CONTAINER ═══════════
@@ -1764,7 +1870,7 @@ async function handleSaveWizardSettings(e) {
     document.getElementById('setup-wizard').classList.remove('active');
     // Now load the actual dashboard and start auto-refresh
     loadDashboard();
-    startAutoRefresh();
+    setupRefreshTriggers();
   } catch(e) {
     toast('保存失败: ' + e.message, 'error');
     btn.disabled = false;
@@ -2038,19 +2144,24 @@ function syncCreateNetworkUI() {
 document.addEventListener('DOMContentLoaded', syncCreateNetworkUI);
 if (document.readyState !== 'loading') syncCreateNetworkUI();
 
-// ═══════════ Auto-refresh ═══════════
-function startAutoRefresh() {
-  if (autoRefresh) clearInterval(autoRefresh);
-  autoRefresh = setInterval(() => {
-    // 不刷新如果模态框、终端或详情面板打开
-    const modal = document.getElementById('modal');
-    const terminal = document.getElementById('terminal-modal');
-    if ((modal && modal.classList.contains('active')) ||
-        (terminal && terminal.classList.contains('active')) ||
-        detailOpen) return;
+// ═══════════ 刷新策略：不轮询，只在需要时刷新 ═══════════
+// 容器状态由用户操作驱动，固定间隔轮询多数时候是空转。
+// 改为：切到容器页 / 窗口重新获得焦点时静默刷新一次 + 手动刷新按钮，
+// 另用一个纯文本计时器维护「x 分钟前更新」标签（不发请求）。
+function setupRefreshTriggers() {
+  if (autoRefresh) { clearInterval(autoRefresh); autoRefresh = null; }
+  document.addEventListener('visibilitychange', () => {
+    if (document.visibilityState !== 'visible') return;
     const active = document.querySelector('.tab-content.active');
     if (active && active.id === 'tab-containers') refreshContainers();
-  }, 15000);
+  });
+  window.addEventListener('focus', () => {
+    if (document.visibilityState !== 'visible') return;
+    const active = document.querySelector('.tab-content.active');
+    if (active && active.id === 'tab-containers' && Date.now() - lastRefreshAt > 20000) refreshContainers();
+  });
+  // 只更新文字标签，不发任何请求
+  autoRefresh = setInterval(updateRefreshLabel, 30000);
 }
 
 // ═══════════ Init ═══════════
@@ -2076,7 +2187,7 @@ document.addEventListener('DOMContentLoaded', async () => {
   }
 
   loadDashboard();
-  startAutoRefresh();
+  setupRefreshTriggers();
 });
 document.addEventListener('keydown', e => {
   if (e.key === 'Escape') { closeModal(); closeConfirm(); closePrompt(); closeTerminal(); }

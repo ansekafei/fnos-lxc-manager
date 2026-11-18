@@ -494,9 +494,9 @@ if wizard_json_path and os.path.exists(os.path.dirname(wizard_json_path)):
                  "helpText": "选择容器数据所在的 btrfs 存储卷；快照/克隆/备份依赖 btrfs 子卷"},
                 {"field": "lxc_data_path", "label": "容器存储路径", "type": "text", "initValue": "/vol1/lxc",
                  "helpText": "LXC 容器根目录，示例：/vol1/lxc"},
-                {"field": "lxc_cache_path", "label": "镜像缓存路径", "type": "text", "initValue": "/vol1/1000/template",
+                {"field": "lxc_cache_path", "label": "镜像缓存路径", "type": "text", "initValue": "/vol1/1000/lxc/template",
                  "helpText": "LXC 模板/镜像缓存目录"},
-                {"field": "lxc_backup_path", "label": "备份存储路径", "type": "text", "initValue": "/vol1/1000/bak",
+                {"field": "lxc_backup_path", "label": "备份存储路径", "type": "text", "initValue": "/vol1/1000/lxc/bak",
                  "helpText": "容器备份存储目录"},
                 {"field": "host_interface", "label": "物理网口", "type": "select", "options": iface_opts, "initValue": default_iface,
                  "helpText": "LXC 容器桥接所绑定的物理网卡"}

@@ -107,13 +107,15 @@ do_start()
     # 清理旧的 unix socket
     rm -f "${SOCKET_PATH}"
 
-    # 后台启动 Python 服务（以 lxc 用户运行，降权）
+    # 后台启动 Python 服务。必须保留 root：LXC 运行期会把容器 config
+    # 权限设为 0000，降权后连文件是否存在都无法准确判断；启动脚本也不能
+    # 通过 su 丢失 TRIM_PKGETC 等应用环境。
     (
         export TRIM_SERVICE_SOCKET="${SOCKET_PATH}"
         export TRIM_APPDEST="${TRIM_APPDEST}"
         export TRIM_PKGVAR="${TRIM_PKGVAR}"
         cd "$(dirname "${PYTHON_SERVER}")" || exit 1
-        su -s /bin/bash lxc -c './fnlxc_server' 2>/dev/null || ./fnlxc_server
+        ./fnlxc_server
     ) >> "${LOG_FILE}" 2>&1 &
 
     local pid=$!

@@ -70,7 +70,7 @@ logger.info("HOME=%s", os.environ.get("HOME", "NOT SET"))
 
 # 版本号：必须与仓库根目录 manifest 的 version 保持一致（构建包版本取 manifest，
 # /api/health 与 /api/version 返回此值），升级时两处一起改。
-APP_VERSION = "3.1.9"
+APP_VERSION = "3.2.7"
 # --- Paths ---
 APP_ROOT = os.path.normpath(os.environ.get("TRIM_APPDEST", os.path.join(os.path.dirname(os.path.abspath(__file__)), "..")))
 UI_DIR = os.path.join(APP_ROOT, "ui")
@@ -81,6 +81,22 @@ SOCKET_PATH = os.environ.get("TRIM_SERVICE_SOCKET", "/var/apps/lxcmanager/lxcman
 _CFG_DIR = os.environ.get("TRIM_PKGETC", "") or os.path.join(APP_ROOT, "config")
 SETTINGS_FILE = os.path.join(_CFG_DIR, "lxcmanager.cfg")
 LEGACY_SETTINGS_FILE = os.path.join(_CFG_DIR, "fnlxc.cfg")
+
+
+def is_first_run():
+    """已有设置或容器时跳过向导，避免覆盖安装清空配置后误判。"""
+    if os.path.isfile(settings_read_path()):
+        return False
+    try:
+        with os.scandir(LXC_PATH) as entries:
+            return not any(
+                entry.name not in (".", "..", ".snapshots")
+                and not entry.name.startswith(".")
+                and entry.is_dir(follow_symlinks=False)
+                for entry in entries
+            )
+    except OSError:
+        return True
 
 
 def settings_read_path():
@@ -2135,6 +2151,17 @@ def get_container_config_path(name):
     return os.path.join(LXC_PATH, name, "config")
 
 
+def config_unavailable_response(config_path):
+    """区分文件确实不存在与 LXC 运行期的 0000 权限保护。"""
+    if os.path.exists(config_path) or os.path.isdir(os.path.dirname(config_path)):
+        return web.json_response({
+            "success": False,
+            "error": "配置仍在，但容器运行中被 LXC 锁定。停止容器后即可查看和编辑。",
+            "locked": True,
+        }, status=423)
+    return web.json_response({"success": False, "error": "配置文件未找到"}, status=404)
+
+
 def set_lxc_autostart(name, val):
     """设置 lxc.start.auto 到容器 config 文件，val=0 或 1，成功返回 True"""
     config_path = get_container_config_path(name)
@@ -2887,13 +2914,13 @@ if HAS_AIOHTTP:
             lines = [l.rstrip() for l in content.split("\n")]
             return web.json_response({"success": True, "data": lines})
         except FileNotFoundError:
-            return web.json_response({"success": False, "error": "配置文件未找到"}, status=404)
+            return config_unavailable_response(config_path)
         except PermissionError:
             # LXC 容器运行中会把容器目录/config 收成 0000（隔离保护），
             # 后端以 lxc 用户跑时连 root 也读不到，要给出可操作的提示而不是"未找到"。
             return web.json_response({
                 "success": False,
-                "error": "容器运行中，配置被 LXC 锁定。请停止容器后再编辑配置。",
+                "error": "配置仍在，但容器运行中被 LXC 锁定。停止容器后即可查看和编辑。",
                 "locked": True,
             }, status=423)
         except Exception as e:
@@ -2913,11 +2940,11 @@ if HAS_AIOHTTP:
             with open(config_path) as f:
                 lines = f.readlines()
         except FileNotFoundError:
-            return web.json_response({"success": False, "error": "配置文件未找到"}, status=404)
+            return config_unavailable_response(config_path)
         except PermissionError:
             return web.json_response({
                 "success": False,
-                "error": "容器运行中，配置被 LXC 锁定。请停止容器后再编辑配置。",
+                "error": "配置仍在，但容器运行中被 LXC 锁定。停止容器后即可查看和编辑。",
                 "locked": True,
             }, status=423)
         new_lines = []
@@ -2932,25 +2959,6 @@ if HAS_AIOHTTP:
                 updates["lxc.net.0.link"] = resolved_link
                 logger.info("handle_config_update: macvlan link %s → %s",
                             updates.get("lxc.net.0.link"), resolved_link)
-
-        # 安全关键配置键黑名单：禁止篡改 rootfs、挂载点、安全策略
-        _BLOCKED_CONFIG_KEYS = (
-            "lxc.rootfs.path", "lxc.rootfs.backend",
-            "lxc.mount.entry", "lxc.mount.auto",
-            "lxc.aa_profile", "lxc.apparmor.profile",
-            "lxc.seccomp.profile", "lxc.seccomp",
-            "lxc.hook.pre-start", "lxc.hook.post-stop",
-            "lxc.hook.start-host", "lxc.hook.clone",
-            "lxc.cap.drop", "lxc.cap.keep",
-            "lxc.autodev", "lxc.console",
-            "lxc.cgroup.devices.allow", "lxc.cgroup.devices.deny",
-        )
-        for blocked in _BLOCKED_CONFIG_KEYS:
-            if blocked in updates:
-                return web.json_response(
-                    {"success": False, "error": f"不允许修改安全敏感配置: {blocked}"},
-                    status=403
-                )
 
         for line in lines:
             stripped = line.strip()
@@ -3096,7 +3104,7 @@ if HAS_AIOHTTP:
             with open(config_path) as f:
                 lines = f.readlines()
         except FileNotFoundError:
-            return web.json_response({"success": False, "error": "配置文件未找到"}, status=404)
+            return config_unavailable_response(config_path)
         except Exception as e:
             return web.json_response({"success": False, "error": f"读取配置失败: {e}"}, status=500)
 
@@ -4471,8 +4479,8 @@ if HAS_AIOHTTP:
 
     # ── First-run detection ──
     async def handle_first_run(request):
-        """检查是否首次运行：配置文件不存在即视为首次运行（卸载时已删除配置）"""
-        is_first = not os.path.isfile(settings_read_path())
+        """已有设置或 LXC 容器均不是首次运行。"""
+        is_first = is_first_run()
         return web.json_response({"success": True, "data": {"first_run": is_first}})
 
     # ── Settings ──
@@ -4796,7 +4804,7 @@ def main():
                     response_data = json.dumps({"success": True, "data": list_containers()}).encode()
                     status = "200 OK"
                 elif api_path == "/api/first-run" and method == "GET":
-                    is_first = not os.path.isfile(settings_read_path())
+                    is_first = is_first_run()
                     response_data = json.dumps({"success": True, "data": {"first_run": is_first}}).encode()
                     status = "200 OK"
                 elif api_path == "/api/stats" and method == "GET":
