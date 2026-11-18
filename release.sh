@@ -85,9 +85,9 @@ sed -i "s/^version[[:space:]]*=.*/version               = ${NEW}/" "$MANIFEST"
 # ── 2. server APP_VERSION ──
 sed -i "s/^APP_VERSION = .*/APP_VERSION = \"${NEW}\"/" "$SERVER"
 
-# ── 3. 前端缓存戳（前端重建期间允许缺失）──
+# ── 3. 前端缓存戳（新前端 ES Module：对全部本地 css/js 引用打戳）──
 if [ -f "$INDEX" ]; then
-    sed -i -E "s|(style\.css\?v=)[0-9]+|\1${STAMP}|; s|(app\.js\?v=)[0-9]+|\1${STAMP}|; s|(main\.js\?v=)[0-9]+|\1${STAMP}|" "$INDEX"
+    sed -i -E "s#(\.(css|js))\?v=[0-9]+\"#\1?v=${STAMP}\"#g; s#(\.(css|js))\"#\1?v=${STAMP}\"#g" "$INDEX"
 else
     echo "注意: ui/index.html 不存在（前端重建中），跳过缓存戳"
 fi
@@ -97,7 +97,6 @@ check() { grep -q "$2" "$1" || { echo "错误: $1 未写入 $2"; exit 1; }; }
 check "$MANIFEST" "version               = ${NEW}"
 check "$SERVER"   "APP_VERSION = \"${NEW}\""
 [ -f "$INDEX" ] && check "$INDEX" "?v=${STAMP}"
-check "$INDEX"    "app.js?v=${STAMP}"
 echo "✓ 版本已同步到 manifest / server / ui 缓存戳"
 
 # ── 4. 构建 ──
@@ -120,7 +119,7 @@ with tarfile.open(fileobj=io.BytesIO(d)) as t:
 assert f"version               = {ver}" in m, "manifest 版本不符"
 assert f'APP_VERSION = "{ver}"' in s, "server 版本不符"
 assert av == ver, f".version={av} 不符"
-assert f"app.js?v={stamp}" in ui and f"style.css?v={stamp}" in ui, "缓存戳不符"
+assert f"?v={stamp}" in ui, "缓存戳不符"
 print(f"✓ 包内核对通过: manifest / APP_VERSION / .version / 缓存戳 ?v={stamp}")
 PY
 
