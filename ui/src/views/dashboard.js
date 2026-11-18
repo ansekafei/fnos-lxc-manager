@@ -35,8 +35,8 @@ export function render() {
       <div class="panel"><div class="ph">存储</div><div class="pb" id="db-store"></div></div>
     </div>`;
   fill('db-host', [
-    ['CPU 核心数', stats.cpus ?? '—'],
-    ['网卡', (stats.nics || []).map((n) => n.name).join(', ') || '—'],
+    ['CPU', stats.cpus ? `${stats.cpus.count} 线程 / ${stats.cpus.cores} 核` : '—'],
+    ['网卡', (stats.nics || []).filter((n) => n.kind === 'physical').map((n) => n.name + (n.is_ovs ? '(OVS)' : '')).join(', ') || '—'],
     ['LXC 版本', stats.lxc_version || '—'],
     ['应用版本', version || '—'],
   ]);

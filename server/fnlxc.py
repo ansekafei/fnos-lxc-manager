@@ -70,7 +70,7 @@ logger.info("HOME=%s", os.environ.get("HOME", "NOT SET"))
 
 # 版本号：必须与仓库根目录 manifest 的 version 保持一致（构建包版本取 manifest，
 # /api/health 与 /api/version 返回此值），升级时两处一起改。
-APP_VERSION = "3.3.3"
+APP_VERSION = "3.3.5"
 # --- Paths ---
 APP_ROOT = os.path.normpath(os.environ.get("TRIM_APPDEST", os.path.join(os.path.dirname(os.path.abspath(__file__)), "..")))
 UI_DIR = os.path.join(APP_ROOT, "ui")
@@ -2973,6 +2973,17 @@ if HAS_AIOHTTP:
             }, status=423)
         new_lines = []
         updated_keys = set(updates.keys())
+
+        # 白名单：lxc.net.0.type 只接受 LXC 合法值；非法值（如把 link 名当 type）
+        # 会让容器 config 解析失败、从列表消失、无法启动
+        _VALID_NET_TYPES = {"veth", "macvlan", "ipvlan", "vlan", "phys", "empty", "none"}
+        if "lxc.net.0.type" in updates:
+            t = (updates.get("lxc.net.0.type") or "").strip()
+            if t not in _VALID_NET_TYPES:
+                return web.json_response({
+                    "success": False,
+                    "error": f"lxc.net.0.type 值非法：'{t}'（合法值：{', '.join(sorted(_VALID_NET_TYPES))}）。桥接名应填在 lxc.net.0.link",
+                }, status=400)
 
         # macvlan 切换时，后端自动解析正确的父接口（OVS port 或物理网卡）
         # 不依赖前端传的具体网卡名

@@ -58,7 +58,7 @@ async function refreshInfo() {
       const patch = {
         state: info.state, cpu_usage: info.cpu_usage, pid: info.pid,
         memory_used: info.memory_used, memory_limit: info.memory_limit,
-        processes: info.processes, ipv4: info.ipv4 || [], ips: info.ips || [],
+        processes: info.processes, ipv4: info.ipv4 || [], ips: info.ipv4 || [],
       };
       if (Object.keys(patch).some((k) => JSON.stringify(c[k]) !== JSON.stringify(patch[k]))) {
         const next = containers.slice(); next[i] = { ...c, ...patch };
@@ -150,7 +150,7 @@ function renderOverview(body) {
 
   const base = [
     ['系统', `${info.os || '—'} ${info.release || ''}`.trim()],
-    ['IPv4', (info.ipv4?.length ? info.ipv4 : info.ips?.length ? info.ips : ['—'])[0] || '—'],
+    ['IPv4', (info.ipv4?.length ? info.ipv4 : info.ip ? [info.ip] : ['—'])[0] || '—'],
     ['PID', info.pid ?? '—'],
     ['开机自启', info.autostart ? '已开启' : '未开启'],
     ['快照数', typeof info.snapshots === 'number' ? info.snapshots : (info.snapshots?.length ?? 0)],
@@ -158,7 +158,7 @@ function renderOverview(body) {
   fillKv(body, '#ov-base', base);
 
   const nets = (info.network || info.interfaces || []);
-  const v4 = info.ipv4?.length ? info.ipv4 : (info.ips || []);
+  const v4 = info.ipv4?.length ? info.ipv4 : (info.ip ? [info.ip] : []);
   const nd = info.network_detail || {};
   if (nets.length) {
     fillKv(body, '#ov-net', nets.slice(0, 5).map((n) => [n.name || n.interface || 'eth0', n.ip || n.address || '—']));

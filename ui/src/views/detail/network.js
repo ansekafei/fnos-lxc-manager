@@ -39,17 +39,32 @@ async function loadMode(el, name) {
   el.innerHTML = '<div class="loading">加载中…</div>';
   try {
     const [lines, nics] = await Promise.all([getConfig(name), listInterfaces()]);
-    const cur = (lines || []).find((l) => l.includes('lxc.net.0.type'))?.split('=')[1]?.trim() || 'lxcbr0';
+    // 当前真实 config 的 type + link；下拉要把 veth+link=lxcbr0 回显成 'lxcbr0'，
+    // veth+link=<其它桥> 回显成 'bridge'（宿主桥接），否则按 type 直显
+    const type = (lines || []).find((l) => l.startsWith('lxc.net.0.type'))?.split('=')[1]?.trim() || '';
+    const link = (lines || []).find((l) => l.startsWith('lxc.net.0.link'))?.split('=')[1]?.trim() || '';
+    let cur;
+    if (type === 'veth' && link === 'lxcbr0') cur = 'lxcbr0';
+    else if (type === 'veth' && link && link !== 'lxcbr0') cur = 'bridge';
+    else if (type === 'macvlan') cur = 'macvlan';
+    else if (type === 'empty' || type === 'none') cur = 'none';
+    else cur = 'bridge';
     el.innerHTML = '';
     const sel = select(
       [
-        { value: 'lxcbr0', label: 'lxcbr0 桥接（默认）' },
+        { value: 'bridge', label: '宿主桥接（veth + OVS/物理桥）' },
+        { value: 'lxcbr0', label: 'NAT (lxcbr0) — 10.0.3.x 子网' },
         { value: 'macvlan', label: 'macvlan（独立 IP）' },
         { value: 'none', label: '无网络' },
       ],
       cur,
     );
-    const nicSel = select((nics || []).map((n) => ({ value: n.name, label: n.name })));
+    // 宿主桥接默认选中 link；macvlan 默认父接口（过滤掉 docker/lo/veth）
+    const usableNics = (nics || []).filter((n) => n.kind === 'physical' || n.is_ovs);
+    const nicSel = select(
+      usableNics.map((n) => ({ value: n.name, label: `${n.name}${n.is_ovs ? ' (OVS)' : ''}` })),
+      link && link !== 'lxcbr0' ? link : (usableNics[0]?.name || ''),
+    );
     const save = document.createElement('button');
     save.className = 'btn primary'; save.textContent = '应用';
     save.dataset.nwAct = 'save';
@@ -74,13 +89,17 @@ export async function onAction(act, btn) {
       // （曾把 'lxcbr0' 直接写进 lxc.net.0.type，LXC 解析失败导致容器起不来）
       let updates;
       if (mode === 'lxcbr0') {
+        // NAT：veth + lxcbr0
         updates = { 'lxc.net.0.type': 'veth', 'lxc.net.0.link': 'lxcbr0', 'lxc.net.0.flags': 'up' };
-      } else if (mode === 'none') {
-        updates = { 'lxc.net.0.type': 'empty' };
+      } else if (mode === 'bridge') {
+        // 宿主桥接：veth + 选中网卡（OVS 桥或物理网卡，LXC 自动识别）
+        updates = { 'lxc.net.0.type': 'veth', 'lxc.net.0.link': nicSel.value, 'lxc.net.0.flags': 'up' };
+      } else if (mode === 'macvlan') {
+        updates = { 'lxc.net.0.type': 'macvlan', 'lxc.net.0.flags': 'up' };
+        if (nicSel.value) updates['lxc.net.0.link'] = nicSel.value;
       } else {
-        updates = { 'lxc.net.0.type': mode };
+        updates = { 'lxc.net.0.type': 'empty' };
       }
-      if (mode === 'macvlan' && nicSel.value) updates['lxc.net.0.link'] = nicSel.value;
       await updateConfig(selected, updates);
       toastOk('网络模式已更新');
     } catch (e) {
