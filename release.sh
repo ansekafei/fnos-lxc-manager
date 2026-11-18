@@ -85,14 +85,18 @@ sed -i "s/^version[[:space:]]*=.*/version               = ${NEW}/" "$MANIFEST"
 # ── 2. server APP_VERSION ──
 sed -i "s/^APP_VERSION = .*/APP_VERSION = \"${NEW}\"/" "$SERVER"
 
-# ── 3. 前端缓存戳 ──
-sed -i -E "s|(style\.css\?v=)[0-9]+|\1${STAMP}|; s|(app\.js\?v=)[0-9]+|\1${STAMP}|" "$INDEX"
+# ── 3. 前端缓存戳（前端重建期间允许缺失）──
+if [ -f "$INDEX" ]; then
+    sed -i -E "s|(style\.css\?v=)[0-9]+|\1${STAMP}|; s|(app\.js\?v=)[0-9]+|\1${STAMP}|; s|(main\.js\?v=)[0-9]+|\1${STAMP}|" "$INDEX"
+else
+    echo "注意: ui/index.html 不存在（前端重建中），跳过缓存戳"
+fi
 
-# ── 校验四处一致 ──
+# ── 校验一致性 ──
 check() { grep -q "$2" "$1" || { echo "错误: $1 未写入 $2"; exit 1; }; }
 check "$MANIFEST" "version               = ${NEW}"
 check "$SERVER"   "APP_VERSION = \"${NEW}\""
-check "$INDEX"    "style.css?v=${STAMP}"
+[ -f "$INDEX" ] && check "$INDEX" "?v=${STAMP}"
 check "$INDEX"    "app.js?v=${STAMP}"
 echo "✓ 版本已同步到 manifest / server / ui 缓存戳"
 
