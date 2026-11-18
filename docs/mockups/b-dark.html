@@ -1,0 +1,140 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<title>方案B · 深色现代</title>
+<style>
+:root{
+  --bg:#0f141b; --panel:#161d27; --panel2:#1b2430; --line:#242e3d; --txt:#e6edf3; --sub:#8b98a9;
+  --accent:#4f8ef7; --accent-soft:#1c2a3f; --ok:#34d399; --stop:#64748b; --warn:#fbbf24;
+  --radius:12px; --sidebar-w:216px;
+}
+*{margin:0;padding:0;box-sizing:border-box}
+body{font:14px/1.5 -apple-system,"PingFang SC","Microsoft YaHei",sans-serif;background:var(--bg);color:var(--txt);display:flex;height:100vh}
+.side{width:var(--sidebar-w);background:var(--panel);border-right:1px solid var(--line);display:flex;flex-direction:column;padding:16px 12px}
+.logo{display:flex;align-items:center;gap:10px;padding:6px 8px 20px;font-weight:700;font-size:16px}
+.logo .dot{width:30px;height:30px;border-radius:9px;background:linear-gradient(135deg,#4f8ef7,#7c5cf0);display:grid;place-items:center;font-size:13px}
+.nav a{display:flex;align-items:center;gap:10px;padding:10px 12px;border-radius:9px;color:var(--sub);text-decoration:none;margin-bottom:3px;transition:.15s}
+.nav a:hover{background:var(--panel2);color:var(--txt)}
+.nav a.on{background:var(--accent-soft);color:var(--accent);font-weight:600;box-shadow:inset 2px 0 0 var(--accent)}
+.nav a .ico{width:16px;text-align:center}
+.side .foot{margin-top:auto;padding:12px;font-size:12px;color:var(--sub);border-top:1px solid var(--line)}
+.main{flex:1;display:flex;flex-direction:column;min-width:0}
+.topbar{height:54px;background:rgba(15,20,27,.8);border-bottom:1px solid var(--line);display:flex;align-items:center;padding:0 22px;gap:14px;backdrop-filter:blur(8px)}
+.topbar h1{font-size:15px;font-weight:600}
+.topbar .right{margin-left:auto;display:flex;gap:12px;align-items:center;font-size:13px;color:var(--sub)}
+.pill{padding:4px 11px;border-radius:99px;font-size:12px;background:var(--accent-soft);color:var(--accent)}
+.content{flex:1;display:flex;min-height:0}
+.master{width:290px;border-right:1px solid var(--line);overflow:auto;padding:14px}
+.master h2{font-size:11.5px;color:var(--sub);font-weight:600;margin:4px 8px 10px;letter-spacing:.08em;text-transform:uppercase}
+.ct{display:flex;align-items:center;gap:11px;padding:11px 12px;border-radius:10px;cursor:pointer;margin-bottom:4px;border:1px solid transparent}
+.ct:hover{background:var(--panel)}
+.ct.on{background:var(--panel2);border-color:var(--line)}
+.ct .st{width:9px;height:9px;border-radius:50%;flex:none;box-shadow:0 0 6px currentColor}
+.st.run{background:var(--ok);color:var(--ok)} .st.down{background:var(--stop);color:var(--stop)} .st.warn{background:var(--warn);color:var(--warn)}
+.ct .nm{flex:1;min-width:0}
+.ct .nm b{display:block;font-size:13.5px;font-weight:600;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.ct .nm span{font-size:11.5px;color:var(--sub)}
+.ct .cpu{font-size:11px;color:var(--sub);text-align:right;line-height:1.5}
+.mini{width:44px;height:3px;border-radius:99px;background:var(--line);margin-top:4px;overflow:hidden}
+.mini i{display:block;height:100%;background:var(--accent)}
+.detail{flex:1;overflow:auto;padding:24px 28px}
+.d-head{display:flex;align-items:center;gap:14px;margin-bottom:22px}
+.d-head h2{font-size:20px}
+.tag{font-size:12px;padding:3px 10px;border-radius:6px;background:rgba(52,211,153,.12);color:var(--ok);font-weight:600}
+.tag.down{background:rgba(100,116,139,.15);color:var(--sub)}
+.btns{margin-left:auto;display:flex;gap:8px}
+.btn{padding:7px 15px;border-radius:9px;border:1px solid var(--line);background:var(--panel);font-size:13px;color:var(--txt);cursor:pointer}
+.btn:hover{border-color:var(--accent)}
+.btn.primary{background:var(--accent);border-color:var(--accent);color:#fff}
+.danger{color:#f87171!important;border-color:rgba(248,113,113,.3)!important}
+.tabs{display:flex;gap:4px;margin-bottom:22px;background:var(--panel);border:1px solid var(--line);border-radius:10px;padding:4px;width:fit-content}
+.tabs a{padding:7px 18px;color:var(--sub);text-decoration:none;border-radius:7px;font-size:13px}
+.tabs a.on{background:var(--accent-soft);color:var(--accent);font-weight:600}
+.cards{display:grid;grid-template-columns:repeat(4,1fr);gap:14px;margin-bottom:20px}
+.card{background:var(--panel);border:1px solid var(--line);border-radius:var(--radius);padding:16px}
+.card .k{font-size:12px;color:var(--sub);margin-bottom:8px}
+.card .v{font-size:19px;font-weight:700;font-variant-numeric:tabular-nums}
+.card .v small{font-size:12px;color:var(--sub);font-weight:400}
+.ring{height:4px;border-radius:99px;background:var(--line);margin-top:12px;overflow:hidden}
+.ring i{display:block;height:100%;border-radius:99px;background:linear-gradient(90deg,var(--accent),#7c5cf0)}
+.grid2{display:grid;grid-template-columns:1fr 1fr;gap:14px}
+.panel{background:var(--panel);border:1px solid var(--line);border-radius:var(--radius)}
+.panel .ph{padding:13px 16px;border-bottom:1px solid var(--line);font-weight:600;font-size:13.5px;display:flex;justify-content:space-between;color:var(--txt)}
+.panel .ph span{color:var(--sub);font-weight:400;font-size:12px}
+.panel .pb{padding:6px 16px 12px}
+.kv{display:flex;justify-content:space-between;padding:9px 0;border-bottom:1px dashed var(--line);font-size:13px}
+.kv:last-child{border:0}
+.kv .k{color:var(--sub)}
+.code{font-family:ui-monospace,monospace;font-size:12px;background:#0b0f14;border:1px solid var(--line);border-radius:8px;padding:12px;color:#9fb8d8;margin-top:6px}
+</style>
+</head>
+<body>
+<aside class="side">
+  <div class="logo"><span class="dot">◆</span>LXC Manager</div>
+  <nav class="nav">
+    <a href="#"><span class="ico">▦</span>仪表盘</a>
+    <a class="on" href="#"><span class="ico">▣</span>容器</a>
+    <a href="#"><span class="ico">＋</span>创建</a>
+    <a href="#"><span class="ico">▤</span>模板</a>
+    <a href="#"><span class="ico">⚙</span>设置</a>
+    <a href="#"><span class="ico">≡</span>日志</a>
+  </nav>
+  <div class="foot">v3.3.0 · fnOS</div>
+</aside>
+<div class="main">
+  <div class="topbar">
+    <h1>容器管理</h1>
+    <span class="pill">6 运行中 · 2 已停止</span>
+    <div class="right"><span>fnos-nas</span><span>·</span><span>负载 0.42</span></div>
+  </div>
+  <div class="content">
+    <div class="master">
+      <h2>Containers · 8</h2>
+      <div class="ct on"><span class="st run"></span><div class="nm"><b>web-nginx</b><span>ct-100 · ubuntu24</span><div class="mini"><i style="width:12%"></i></div></div><div class="cpu">CPU 3%<br>MEM 12%</div></div>
+      <div class="ct"><span class="st run"></span><div class="nm"><b>db-postgres</b><span>ct-101 · debian12</span><div class="mini"><i style="width:41%;background:var(--warn)"></i></div></div><div class="cpu">CPU 8%<br>MEM 41%</div></div>
+      <div class="ct"><span class="st run"></span><div class="nm"><b>home-assistant</b><span>ct-102 · alpine</span><div class="mini"><i style="width:38%"></i></div></div><div class="cpu">CPU 15%<br>MEM 38%</div></div>
+      <div class="ct"><span class="st run"></span><div class="nm"><b>qbittorrent</b><span>ct-103 · debian12</span><div class="mini"><i style="width:22%"></i></div></div><div class="cpu">CPU 5%<br>MEM 22%</div></div>
+      <div class="ct"><span class="st run"></span><div class="nm"><b>frps-内网穿透</b><span>ct-104 · alpine</span><div class="mini"><i style="width:4%"></i></div></div><div class="cpu">CPU 1%<br>MEM 4%</div></div>
+      <div class="ct"><span class="st run"></span><div class="nm"><b>immich-ml</b><span>ct-105 · ubuntu24</span><div class="mini"><i style="width:55%;background:#f87171"></i></div></div><div class="cpu">CPU 22%<br>MEM 55%</div></div>
+      <div class="ct"><span class="st down"></span><div class="nm"><b>dev-sandbox</b><span>ct-106 · ubuntu22</span></div></div>
+      <div class="ct"><span class="st down"></span><div class="nm"><b>test-old.v2@备份</b><span>ct-107 · debian11</span></div></div>
+    </div>
+    <div class="detail">
+      <div class="d-head">
+        <span class="st run" style="width:11px;height:11px"></span>
+        <h2>web-nginx</h2><span class="tag">运行中</span>
+        <div class="btns">
+          <button class="btn">启动</button><button class="btn">重启</button>
+          <button class="btn">终端</button><button class="btn primary">停止</button><button class="btn danger">删除</button>
+        </div>
+      </div>
+      <div class="tabs"><a class="on" href="#">概览</a><a href="#">设置</a><a href="#">网络</a><a href="#">数据</a></div>
+      <div class="cards">
+        <div class="card"><div class="k">CPU</div><div class="v">3.2<small> %</small></div><div class="ring"><i style="width:3%"></i></div></div>
+        <div class="card"><div class="k">内存</div><div class="v">184<small> MB / 1.5 GB</small></div><div class="ring"><i style="width:12%"></i></div></div>
+        <div class="card"><div class="k">根盘</div><div class="v">6.1<small> GB / 20 GB</small></div><div class="ring"><i style="width:31%"></i></div></div>
+        <div class="card"><div class="k">运行时长</div><div class="v" style="font-size:15px">12 天 4 小时</div></div>
+      </div>
+      <div class="grid2">
+        <div class="panel"><div class="ph">基本信息<span>ct-100</span></div><div class="pb">
+          <div class="kv"><span class="k">系统模板</span><span>ubuntu-24.04</span></div>
+          <div class="kv"><span class="k">IPv4</span><span>192.168.1.120</span></div>
+          <div class="kv"><span class="k">开机自启</span><span>已开启</span></div>
+          <div class="kv"><span class="k">启动顺序</span><span>1</span></div>
+        </div></div>
+        <div class="panel"><div class="ph">资源限制<span>运行期锁定，停止后可编辑</span></div><div class="pb">
+          <div class="kv"><span class="k">CPU 核心</span><span>2 / 8</span></div>
+          <div class="kv"><span class="k">内存</span><span>1.5 GB</span></div>
+          <div class="kv"><span class="k">Swap</span><span>512 MB</span></div>
+          <div class="kv"><span class="k">存储池</span><span>pool-main</span></div>
+        </div></div>
+      </div>
+      <div class="panel" style="margin-top:14px"><div class="ph">最近日志<span>tail 200</span></div><div class="pb">
+        <div class="code">Nov 18 19:42:01 web-nginx systemd[1]: nginx.service: Succeeded.<br>Nov 18 19:55:12 web-nginx cron[521]: (root) CMD (/usr/local/bin/backup.sh)</div>
+      </div></div>
+    </div>
+  </div>
+</div>
+</body>
+</html>

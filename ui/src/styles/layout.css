@@ -1,0 +1,84 @@
+/* layout.css —— 侧栏 + 顶栏 + 主从双栏骨架 */
+body { display: flex; height: 100vh; overflow: hidden; }
+
+/* ---------- 侧边栏 ---------- */
+.side {
+  width: var(--sidebar-w); flex: none;
+  background: var(--panel); border-right: 1px solid var(--line);
+  display: flex; flex-direction: column; padding: 16px 10px;
+}
+.side .logo { display: flex; align-items: center; gap: 10px; padding: 6px 10px 18px; font-weight: 700; font-size: var(--fs-lg); }
+.side .logo .dot { width: 28px; height: 28px; border-radius: 8px; background: var(--accent); color: #fff; display: grid; place-items: center; font-size: 13px; }
+.side .nav a {
+  display: flex; align-items: center; gap: 10px;
+  padding: 9px 12px; border-radius: var(--radius-sm);
+  color: var(--sub); margin-bottom: 2px; cursor: pointer;
+}
+.side .nav a.on { background: var(--accent-soft); color: var(--accent); font-weight: 600; }
+.side .nav a .ico { width: 16px; text-align: center; }
+.side .foot { margin-top: auto; padding: 10px 12px; font-size: 12px; color: var(--sub); border-top: 1px solid var(--line); }
+
+/* ---------- 主区 ---------- */
+.main { flex: 1; display: flex; flex-direction: column; min-width: 0; }
+.topbar {
+  height: var(--topbar-h); flex: none;
+  background: var(--panel); border-bottom: 1px solid var(--line);
+  display: flex; align-items: center; gap: 14px; padding: 0 20px;
+}
+.topbar h1 { font-size: 15px; }
+.topbar .right { margin-left: auto; display: flex; gap: 10px; align-items: center; font-size: 13px; color: var(--sub); }
+.pill { padding: 3px 10px; border-radius: 99px; font-size: 12px; background: var(--accent-soft); color: var(--accent); }
+
+.content { flex: 1; display: flex; min-height: 0; }
+
+/* ---------- 主从双栏 ---------- */
+.master { width: 280px; flex: none; border-right: 1px solid var(--line); overflow: auto; padding: 14px; }
+.master h2 { font-size: 12px; color: var(--sub); font-weight: 600; margin: 4px 8px 10px; letter-spacing: .05em; }
+
+.ct { display: flex; align-items: center; gap: 10px; padding: 10px 12px; border-radius: 9px; cursor: pointer; margin-bottom: 4px; }
+.ct:hover { background: #eef2f7; }
+.ct.on { background: var(--accent-soft); }
+.ct .st { width: 9px; height: 9px; border-radius: 50%; flex: none; background: var(--stop); }
+.ct.run .st { background: var(--ok); }
+.ct.frozen .st { background: var(--warn); }
+.ct .nm { flex: 1; min-width: 0; }
+.ct .nm b { display: block; font-size: 13.5px; font-weight: 600; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.ct .nm span { font-size: 11.5px; color: var(--sub); }
+.ct .load { font-size: 11px; color: var(--sub); text-align: right; line-height: 1.4; white-space: nowrap; }
+
+/* ---------- 详情区 ---------- */
+.detail { flex: 1; overflow: auto; padding: 22px 26px; min-width: 0; }
+.detail .d-head { display: flex; align-items: center; gap: 14px; margin-bottom: 20px; }
+.detail .d-head h2 { font-size: var(--fs-xl); }
+.detail .btns { margin-left: auto; display: flex; gap: 8px; }
+
+.detail .tabs { display: flex; gap: 22px; border-bottom: 1px solid var(--line); margin-bottom: 20px; }
+.detail .tabs a { padding: 10px 2px; color: var(--sub); cursor: pointer; border-bottom: 2px solid transparent; }
+.detail .tabs a.on { color: var(--accent); border-color: var(--accent); font-weight: 600; }
+
+/* 卡片与面板 */
+.cards { display: grid; grid-template-columns: repeat(4, 1fr); gap: var(--gap); margin-bottom: 20px; }
+.card { background: var(--panel); border: 1px solid var(--line); border-radius: var(--radius); padding: 14px 16px; }
+.card .k { font-size: 12px; color: var(--sub); margin-bottom: 6px; }
+.card .v { font-size: 18px; font-weight: 700; }
+.card .v small { font-size: 12px; color: var(--sub); font-weight: 400; }
+.bar { height: 6px; border-radius: 99px; background: #eef2f7; margin-top: 10px; overflow: hidden; }
+.bar i { display: block; height: 100%; border-radius: 99px; background: var(--accent); }
+
+.grid2 { display: grid; grid-template-columns: 1fr 1fr; gap: var(--gap); }
+.panel { background: var(--panel); border: 1px solid var(--line); border-radius: var(--radius); margin-bottom: var(--gap); }
+.panel .ph { padding: 12px 16px; border-bottom: 1px solid var(--line); font-weight: 600; font-size: 13.5px; display: flex; justify-content: space-between; align-items: center; }
+.panel .ph span { color: var(--sub); font-weight: 400; font-size: 12px; }
+.panel .pb { padding: 6px 16px 12px; }
+.kv { display: flex; justify-content: space-between; padding: 8px 0; border-bottom: 1px dashed #eef1f5; font-size: 13px; gap: 12px; }
+.kv:last-child { border-bottom: 0; }
+.kv .k { color: var(--sub); flex: none; }
+.kv .v { text-align: right; word-break: break-all; }
+
+/* 独立页面（仪表盘/创建/模板/设置/日志）：无 master 栏，占满 content */
+.page { flex: 1; overflow: auto; padding: 22px 26px; min-width: 0; }
+
+@media (max-width: 1100px) {
+  .cards { grid-template-columns: repeat(2, 1fr); }
+  .grid2 { grid-template-columns: 1fr; }
+}

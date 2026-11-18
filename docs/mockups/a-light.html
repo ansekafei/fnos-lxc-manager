@@ -1,0 +1,135 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<title>方案A · 清爽浅色</title>
+<style>
+:root{
+  --bg:#f5f7fa; --panel:#ffffff; --line:#e4e9ef; --txt:#1f2d3d; --sub:#7f8fa4;
+  --accent:#3b82f6; --accent-soft:#eaf2fe; --ok:#22c55e; --stop:#94a3b8; --warn:#f59e0b;
+  --radius:10px; --sidebar-w:210px;
+}
+*{margin:0;padding:0;box-sizing:border-box}
+body{font:14px/1.5 -apple-system,"PingFang SC","Microsoft YaHei",sans-serif;background:var(--bg);color:var(--txt);display:flex;height:100vh}
+/* 侧边栏 */
+.side{width:var(--sidebar-w);background:var(--panel);border-right:1px solid var(--line);display:flex;flex-direction:column;padding:16px 10px}
+.logo{display:flex;align-items:center;gap:10px;padding:6px 10px 18px;font-weight:700;font-size:16px}
+.logo .dot{width:28px;height:28px;border-radius:8px;background:var(--accent);color:#fff;display:grid;place-items:center;font-size:13px}
+.nav a{display:flex;align-items:center;gap:10px;padding:9px 12px;border-radius:8px;color:var(--sub);text-decoration:none;margin-bottom:2px}
+.nav a.on{background:var(--accent-soft);color:var(--accent);font-weight:600}
+.nav a .ico{width:16px;text-align:center}
+.side .foot{margin-top:auto;padding:10px 12px;font-size:12px;color:var(--sub);border-top:1px solid var(--line)}
+/* 主区 */
+.main{flex:1;display:flex;flex-direction:column;min-width:0}
+.topbar{height:52px;background:var(--panel);border-bottom:1px solid var(--line);display:flex;align-items:center;padding:0 20px;gap:14px}
+.topbar h1{font-size:15px;font-weight:600}
+.topbar .right{margin-left:auto;display:flex;gap:10px;align-items:center;font-size:13px;color:var(--sub)}
+.pill{padding:3px 10px;border-radius:99px;font-size:12px;background:var(--accent-soft);color:var(--accent)}
+.content{flex:1;display:flex;min-height:0}
+/* 主从双栏 */
+.master{width:280px;border-right:1px solid var(--line);overflow:auto;padding:14px}
+.master h2{font-size:12px;color:var(--sub);font-weight:600;margin:4px 8px 10px;letter-spacing:.05em}
+.ct{display:flex;align-items:center;gap:10px;padding:10px 12px;border-radius:9px;cursor:pointer;margin-bottom:4px}
+.ct:hover{background:#eef2f7}
+.ct.on{background:var(--accent-soft)}
+.ct .st{width:9px;height:9px;border-radius:50%;flex:none}
+.st.run{background:var(--ok)} .st.down{background:var(--stop)} .st.warn{background:var(--warn)}
+.ct .nm{flex:1;min-width:0}
+.ct .nm b{display:block;font-size:13.5px;font-weight:600;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.ct .nm span{font-size:11.5px;color:var(--sub)}
+.ct .cpu{font-size:11px;color:var(--sub);text-align:right;line-height:1.4}
+/* 详情 */
+.detail{flex:1;overflow:auto;padding:22px 26px}
+.d-head{display:flex;align-items:center;gap:14px;margin-bottom:20px}
+.d-head h2{font-size:19px}
+.tag{font-size:12px;padding:3px 10px;border-radius:6px;background:#dcfce7;color:#16a34a;font-weight:600}
+.tag.down{background:#f1f5f9;color:#64748b}
+.btns{margin-left:auto;display:flex;gap:8px}
+.btn{padding:7px 14px;border-radius:8px;border:1px solid var(--line);background:#fff;font-size:13px;color:var(--txt);cursor:pointer}
+.btn.primary{background:var(--accent);border-color:var(--accent);color:#fff}
+.danger{color:#dc2626!important;border-color:#fecaca!important}
+.tabs{display:flex;gap:22px;border-bottom:1px solid var(--line);margin-bottom:20px}
+.tabs a{padding:10px 2px;color:var(--sub);text-decoration:none;border-bottom:2px solid transparent}
+.tabs a.on{color:var(--accent);border-color:var(--accent);font-weight:600}
+.cards{display:grid;grid-template-columns:repeat(4,1fr);gap:14px;margin-bottom:20px}
+.card{background:var(--panel);border:1px solid var(--line);border-radius:var(--radius);padding:14px 16px}
+.card .k{font-size:12px;color:var(--sub);margin-bottom:6px}
+.card .v{font-size:18px;font-weight:700}
+.card .v small{font-size:12px;color:var(--sub);font-weight:400}
+.bar{height:6px;border-radius:99px;background:#eef2f7;margin-top:10px;overflow:hidden}
+.bar i{display:block;height:100%;border-radius:99px}
+.grid2{display:grid;grid-template-columns:1fr 1fr;gap:14px}
+.panel{background:var(--panel);border:1px solid var(--line);border-radius:var(--radius)}
+.panel .ph{padding:12px 16px;border-bottom:1px solid var(--line);font-weight:600;font-size:13.5px}
+.panel .pb{padding:6px 16px 12px}
+.kv{display:flex;justify-content:space-between;padding:8px 0;border-bottom:1px dashed #eef1f5;font-size:13px}
+.kv:last-child{border:0}
+.kv .k{color:var(--sub)}
+</style>
+</head>
+<body>
+<aside class="side">
+  <div class="logo"><span class="dot">LX</span>LXC Manager</div>
+  <nav class="nav">
+    <a href="#">▦ 仪表盘</a>
+    <a class="on" href="#">▣ 容器</a>
+    <a href="#">＋ 创建</a>
+    <a href="#">▤ 模板</a>
+    <a href="#">⚙ 设置</a>
+    <a href="#">≡ 日志</a>
+  </nav>
+  <div class="foot">v3.3.0 · fnOS</div>
+</aside>
+<div class="main">
+  <div class="topbar">
+    <h1>容器管理</h1>
+    <span class="pill">6 运行中 · 2 已停止</span>
+    <div class="right"><span>fnos-nas</span><span>·</span><span>负载 0.42</span></div>
+  </div>
+  <div class="content">
+    <div class="master">
+      <h2>容器（8）</h2>
+      <div class="ct on"><span class="st run"></span><div class="nm"><b>web-nginx</b><span>ct-100 · ubuntu24</span></div><div class="cpu">CPU 3%<br>MEM 12%</div></div>
+      <div class="ct"><span class="st run"></span><div class="nm"><b>db-postgres</b><span>ct-101 · debian12</span></div><div class="cpu">CPU 8%<br>MEM 41%</div></div>
+      <div class="ct"><span class="st run"></span><div class="nm"><b>home-assistant</b><span>ct-102 · alpine</span></div><div class="cpu">CPU 15%<br>MEM 38%</div></div>
+      <div class="ct"><span class="st run"></span><div class="nm"><b>qbittorrent</b><span>ct-103 · debian12</span></div><div class="cpu">CPU 5%<br>MEM 22%</div></div>
+      <div class="ct"><span class="st run"></span><div class="nm"><b>frps-内网穿透</b><span>ct-104 · alpine</span></div><div class="cpu">CPU 1%<br>MEM 4%</div></div>
+      <div class="ct"><span class="st run"></span><div class="nm"><b>immich-ml</b><span>ct-105 · ubuntu24</span></div><div class="cpu">CPU 22%<br>MEM 55%</div></div>
+      <div class="ct"><span class="st down"></span><div class="nm"><b>dev-sandbox</b><span>ct-106 · ubuntu22</span></div><div class="cpu">—</div></div>
+      <div class="ct"><span class="st down"></span><div class="nm"><b>test-old.v2@备份</b><span>ct-107 · debian11</span></div><div class="cpu">—</div></div>
+    </div>
+    <div class="detail">
+      <div class="d-head">
+        <span class="st run" style="width:11px;height:11px"></span>
+        <h2>web-nginx</h2><span class="tag">运行中</span>
+        <div class="btns">
+          <button class="btn">启动</button><button class="btn">重启</button>
+          <button class="btn">终端</button><button class="btn primary">停止</button><button class="btn danger">删除</button>
+        </div>
+      </div>
+      <div class="tabs"><a class="on" href="#">概览</a><a href="#">设置</a><a href="#">网络</a><a href="#">数据（快照/备份）</a></div>
+      <div class="cards">
+        <div class="card"><div class="k">CPU</div><div class="v">3.2<small> %</small></div><div class="bar"><i style="width:3%;background:var(--accent)"></i></div></div>
+        <div class="card"><div class="k">内存</div><div class="v">184<small> MB / 1.5 GB</small></div><div class="bar"><i style="width:12%;background:var(--accent)"></i></div></div>
+        <div class="card"><div class="k">根盘</div><div class="v">6.1<small> GB / 20 GB</small></div><div class="bar"><i style="width:31%;background:var(--ok)"></i></div></div>
+        <div class="card"><div class="k">运行时长</div><div class="v" style="font-size:15px">12 天 4 小时</div></div>
+      </div>
+      <div class="grid2">
+        <div class="panel"><div class="ph">基本信息</div><div class="pb">
+          <div class="kv"><span class="k">容器 ID</span><span>100</span></div>
+          <div class="kv"><span class="k">系统模板</span><span>ubuntu-24.04</span></div>
+          <div class="kv"><span class="k">IPv4</span><span>192.168.1.120</span></div>
+          <div class="kv"><span class="k">开机自启</span><span>已开启</span></div>
+        </div></div>
+        <div class="panel"><div class="ph">资源限制</div><div class="pb">
+          <div class="kv"><span class="k">CPU 核心</span><span>2 / 8</span></div>
+          <div class="kv"><span class="k">内存</span><span>1.5 GB</span></div>
+          <div class="kv"><span class="k">Swap</span><span>512 MB</span></div>
+          <div class="kv"><span class="k">ZFS 池</span><span>pool-main</span></div>
+        </div></div>
+      </div>
+    </div>
+  </div>
+</div>
+</body>
+</html>

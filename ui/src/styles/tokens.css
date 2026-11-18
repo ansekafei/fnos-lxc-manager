@@ -1,0 +1,37 @@
+/* tokens.css —— 方案A · 清爽浅色，全部颜色/间距/字号只有这里一份 */
+
+:root {
+  /* 颜色 */
+  --bg: #f5f7fa;
+  --panel: #ffffff;
+  --line: #e4e9ef;
+  --txt: #1f2d3d;
+  --sub: #7f8fa4;
+  --accent: #3b82f6;
+  --accent-soft: #eaf2fe;
+  --ok: #22c55e;
+  --ok-soft: #dcfce7;
+  --ok-txt: #16a34a;
+  --stop: #94a3b8;
+  --stop-soft: #f1f5f9;
+  --stop-txt: #64748b;
+  --warn: #f59e0b;
+  --danger: #dc2626;
+  --danger-soft: #fecaca;
+
+  /* 形状 */
+  --radius: 10px;
+  --radius-sm: 8px;
+  --sidebar-w: 210px;
+  --topbar-h: 52px;
+
+  /* 字号 */
+  --fs-sm: 12px;
+  --fs-base: 14px;
+  --fs-lg: 16px;
+  --fs-xl: 19px;
+
+  /* 间距 */
+  --gap: 14px;
+  --pad: 16px;
+}

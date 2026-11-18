@@ -1,0 +1,147 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<title>方案C · 卡片仪表风</title>
+<style>
+:root{
+  --bg:#eef1f6; --panel:#ffffff; --line:#e2e8f0; --txt:#0f172a; --sub:#64748b;
+  --accent:#6366f1; --accent-soft:#eef0fe; --ok:#10b981; --stop:#94a3b8; --warn:#f59e0b;
+  --radius:14px; --sidebar-w:200px;
+}
+*{margin:0;padding:0;box-sizing:border-box}
+body{font:14px/1.5 -apple-system,"PingFang SC","Microsoft YaHei",sans-serif;background:var(--bg);color:var(--txt);display:flex;height:100vh}
+.side{width:var(--sidebar-w);background:linear-gradient(180deg,#1e1b4b,#312e81);color:#c7d2fe;display:flex;flex-direction:column;padding:18px 12px}
+.logo{display:flex;align-items:center;gap:10px;padding:6px 10px 22px;color:#fff;font-weight:700;font-size:16px}
+.logo .dot{width:30px;height:30px;border-radius:9px;background:#6366f1;display:grid;place-items:center;font-size:13px}
+.nav a{display:flex;align-items:center;gap:10px;padding:10px 12px;border-radius:10px;color:#c7d2fe;text-decoration:none;margin-bottom:3px}
+.nav a.on{background:rgba(255,255,255,.14);color:#fff;font-weight:600}
+.nav a .ico{width:16px;text-align:center}
+.side .foot{margin-top:auto;padding:12px;font-size:12px;color:#a5b4fc;border-top:1px solid rgba(255,255,255,.12)}
+.main{flex:1;display:flex;flex-direction:column;min-width:0}
+.topbar{height:56px;display:flex;align-items:center;padding:0 24px;gap:14px}
+.topbar h1{font-size:16px;font-weight:700}
+.topbar .right{margin-left:auto;display:flex;gap:10px}
+.chip{padding:5px 12px;border-radius:99px;font-size:12px;background:var(--panel);border:1px solid var(--line);color:var(--sub)}
+.chip b{color:var(--txt)}
+.content{flex:1;display:flex;min-height:0;padding:0 24px 24px;gap:18px}
+/* 左列：容器卡片流 */
+.master{width:340px;overflow:auto}
+.master h2{font-size:12px;color:var(--sub);font-weight:700;margin:2px 4px 10px;letter-spacing:.05em}
+.ct{background:var(--panel);border:1px solid var(--line);border-radius:var(--radius);padding:13px 15px;margin-bottom:9px;cursor:pointer;position:relative;overflow:hidden}
+.ct::before{content:"";position:absolute;left:0;top:0;bottom:0;width:4px;background:var(--stop)}
+.ct.run::before{background:var(--ok)}
+.ct.on{border-color:var(--accent);box-shadow:0 0 0 3px var(--accent-soft)}
+.ct.run.on::before{background:var(--accent)}
+.ct .r1{display:flex;align-items:center;gap:8px}
+.ct b{font-size:14px}
+.badge{margin-left:auto;font-size:11px;padding:2px 8px;border-radius:99px;background:#dcfce7;color:#059669;font-weight:600}
+.badge.down{background:#f1f5f9;color:var(--sub)}
+.ct .r2{display:flex;gap:16px;margin-top:9px;font-size:11.5px;color:var(--sub)}
+.ct .r2 b{font-size:12px;color:var(--txt);font-variant-numeric:tabular-nums}
+.spark{margin-top:9px;height:26px;display:flex;align-items:flex-end;gap:2px}
+.spark i{flex:1;background:var(--accent-soft);border-radius:2px 2px 0 0}
+.spark i.hi{background:var(--accent)}
+/* 右列：详情 */
+.detail{flex:1;overflow:auto}
+.hero{background:var(--panel);border:1px solid var(--line);border-radius:var(--radius);padding:20px 24px;margin-bottom:16px;display:flex;align-items:center;gap:16px}
+.hero h2{font-size:21px}
+.sub{font-size:12.5px;color:var(--sub);margin-top:3px}
+.btns{margin-left:auto;display:flex;gap:8px}
+.btn{padding:8px 16px;border-radius:10px;border:1px solid var(--line);background:#fff;font-size:13px;color:var(--txt);cursor:pointer;box-shadow:0 1px 2px rgba(15,23,42,.05)}
+.btn.primary{background:var(--accent);border-color:var(--accent);color:#fff}
+.danger{color:#dc2626!important}
+.tabs{display:flex;gap:8px;margin-bottom:16px}
+.tabs a{padding:8px 16px;border-radius:99px;color:var(--sub);text-decoration:none;font-size:13px;background:var(--panel);border:1px solid var(--line)}
+.tabs a.on{background:var(--accent);border-color:var(--accent);color:#fff;font-weight:600}
+.stats{display:grid;grid-template-columns:repeat(3,1fr);gap:14px;margin-bottom:16px}
+.stat{background:var(--panel);border:1px solid var(--line);border-radius:var(--radius);padding:16px 18px}
+.stat .k{font-size:12px;color:var(--sub);display:flex;justify-content:space-between}
+.stat .v{font-size:24px;font-weight:800;margin:6px 0 10px;font-variant-numeric:tabular-nums}
+.stat .v small{font-size:13px;color:var(--sub);font-weight:500}
+.big{height:8px;border-radius:99px;background:#eef1f6;overflow:hidden}
+.big i{display:block;height:100%;border-radius:99px}
+.panel{background:var(--panel);border:1px solid var(--line);border-radius:var(--radius);margin-bottom:14px}
+.panel .ph{padding:13px 18px;border-bottom:1px solid var(--line);font-weight:600;font-size:13.5px}
+.panel .pb{padding:8px 18px 14px}
+.kv{display:flex;justify-content:space-between;padding:9px 0;border-bottom:1px dashed var(--line);font-size:13px}
+.kv:last-child{border:0}
+.kv .k{color:var(--sub)}
+</style>
+</head>
+<body>
+<aside class="side">
+  <div class="logo"><span class="dot">◆</span>LXC Manager</div>
+  <nav class="nav">
+    <a href="#"><span class="ico">▦</span>仪表盘</a>
+    <a class="on" href="#"><span class="ico">▣</span>容器</a>
+    <a href="#"><span class="ico">＋</span>创建</a>
+    <a href="#"><span class="ico">▤</span>模板</a>
+    <a href="#"><span class="ico">⚙</span>设置</a>
+    <a href="#"><span class="ico">≡</span>日志</a>
+  </nav>
+  <div class="foot">v3.3.0 · fnOS</div>
+</aside>
+<div class="main">
+  <div class="topbar">
+    <h1>容器</h1>
+    <div class="right"><span class="chip">运行 <b>6</b></span><span class="chip">停止 <b>2</b></span><span class="chip">CPU <b>8.6%</b></span><span class="chip">内存 <b>5.2 / 32 GB</b></span></div>
+  </div>
+  <div class="content">
+    <div class="master">
+      <h2>全部容器（8）</h2>
+      <div class="ct run on">
+        <div class="r1"><b>web-nginx</b><span class="badge">运行中</span></div>
+        <div class="r2"><span>ct-100</span><span>CPU <b>3%</b></span><span>MEM <b>184 MB</b></span></div>
+        <div class="spark"><i style="height:30%"></i><i style="height:45%"></i><i style="height:35%" class="hi"></i><i style="height:50%"></i><i style="height:40%" class="hi"></i><i style="height:32%"></i><i style="height:48%"></i><i style="height:28%"></i><i style="height:38%" class="hi"></i><i style="height:42%"></i><i style="height:30%"></i><i style="height:44%"></i></div>
+      </div>
+      <div class="ct run">
+        <div class="r1"><b>db-postgres</b><span class="badge">运行中</span></div>
+        <div class="r2"><span>ct-101</span><span>CPU <b>8%</b></span><span>MEM <b>615 MB</b></span></div>
+        <div class="spark"><i style="height:60%"></i><i style="height:70%"></i><i style="height:65%" class="hi"></i><i style="height:75%"></i><i style="height:62%" class="hi"></i><i style="height:68%"></i><i style="height:72%"></i><i style="height:66%"></i><i style="height:70%" class="hi"></i><i style="height:74%"></i><i style="height:61%"></i><i style="height:69%"></i></div>
+      </div>
+      <div class="ct run">
+        <div class="r1"><b>home-assistant</b><span class="badge">运行中</span></div>
+        <div class="r2"><span>ct-102</span><span>CPU <b>15%</b></span><span>MEM <b>570 MB</b></span></div>
+        <div class="spark"><i style="height:40%"></i><i style="height:55%"></i><i style="height:48%" class="hi"></i><i style="height:60%"></i><i style="height:52%" class="hi"></i><i style="height:44%"></i><i style="height:58%"></i><i style="height:50%"></i><i style="height:46%" class="hi"></i><i style="height:56%"></i><i style="height:42%"></i><i style="height:54%"></i></div>
+      </div>
+      <div class="ct run">
+        <div class="r1"><b>qbittorrent</b><span class="badge">运行中</span></div>
+        <div class="r2"><span>ct-103</span><span>CPU <b>5%</b></span><span>MEM <b>330 MB</b></span></div>
+        <div class="spark"><i style="height:25%"></i><i style="height:35%"></i><i style="height:30%" class="hi"></i><i style="height:40%"></i><i style="height:28%" class="hi"></i><i style="height:33%"></i><i style="height:38%"></i><i style="height:26%"></i><i style="height:31%" class="hi"></i><i style="height:36%"></i><i style="height:24%"></i><i style="height:34%"></i></div>
+      </div>
+      <div class="ct run">
+        <div class="r1"><b>frps-内网穿透</b><span class="badge">运行中</span></div>
+        <div class="r2"><span>ct-104</span><span>CPU <b>1%</b></span><span>MEM <b>60 MB</b></span></div>
+        <div class="spark"><i style="height:10%"></i><i style="height:15%"></i><i style="height:12%" class="hi"></i><i style="height:18%"></i><i style="height:14%" class="hi"></i><i style="height:11%"></i><i style="height:16%"></i><i style="height:13%"></i><i style="height:9%" class="hi"></i><i style="height:17%"></i><i style="height:12%"></i><i style="height:15%"></i></div>
+      </div>
+      <div class="ct run">
+        <div class="r1"><b>immich-ml</b><span class="badge">运行中</span></div>
+        <div class="r2"><span>ct-105</span><span>CPU <b>22%</b></span><span>MEM <b>825 MB</b></span></div>
+        <div class="spark"><i style="height:80%"></i><i style="height:90%"></i><i style="height:85%" class="hi"></i><i style="height:95%"></i><i style="height:82%" class="hi"></i><i style="height:88%"></i><i style="height:92%"></i><i style="height:86%"></i><i style="height:90%" class="hi"></i><i style="height:94%"></i><i style="height:81%"></i><i style="height:89%"></i></div>
+      </div>
+      <div class="ct"><div class="r1"><b>dev-sandbox</b><span class="badge down">已停止</span></div><div class="r2"><span>ct-106</span><span>ubuntu22</span></div></div>
+      <div class="ct"><div class="r1"><b>test-old.v2@备份</b><span class="badge down">已停止</span></div><div class="r2"><span>ct-107</span><span>debian11</span></div></div>
+    </div>
+    <div class="detail">
+      <div class="hero">
+        <div><h2>web-nginx</h2><div class="sub">ct-100 · ubuntu-24.04 · 192.168.1.120 · 运行 12 天 4 小时</div></div>
+        <div class="btns"><button class="btn">重启</button><button class="btn">终端</button><button class="btn primary">停止</button><button class="btn danger">删除</button></div>
+      </div>
+      <div class="tabs"><a class="on" href="#">概览</a><a href="#">设置</a><a href="#">网络</a><a href="#">数据</a></div>
+      <div class="stats">
+        <div class="stat"><div class="k"><span>CPU</span><span>限额 2 核</span></div><div class="v">3.2<small>%</small></div><div class="big"><i style="width:12%;background:var(--accent)"></i></div></div>
+        <div class="stat"><div class="k"><span>内存</span><span>限额 1.5 GB</span></div><div class="v">184<small> MB</small></div><div class="big"><i style="width:12%;background:var(--ok)"></i></div></div>
+        <div class="stat"><div class="k"><span>根盘</span><span>20 GB</span></div><div class="v">6.1<small> GB</small></div><div class="big"><i style="width:31%;background:var(--warn)"></i></div></div>
+      </div>
+      <div class="panel"><div class="ph">基本信息</div><div class="pb">
+        <div class="kv"><span class="k">开机自启</span><span>已开启</span></div>
+        <div class="kv"><span class="k">启动顺序</span><span>1</span></div>
+        <div class="kv"><span class="k">MAC 地址</span><span>BC:24:11:xx:xx:F0</span></div>
+        <div class="kv"><span class="k">描述</span><span>主站反向代理，走 80/443</span></div>
+      </div></div>
+    </div>
+  </div>
+</div>
+</body>
+</html>

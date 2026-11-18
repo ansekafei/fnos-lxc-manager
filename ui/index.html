@@ -1,0 +1,46 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>LXC Manager</title>
+<link rel="stylesheet" href="src/styles/tokens.css">
+<link rel="stylesheet" href="src/styles/base.css">
+<link rel="stylesheet" href="src/styles/layout.css">
+</head>
+<body>
+  <!-- 侧边导航 -->
+  <aside class="side">
+    <div class="logo"><span class="dot">LX</span>LXC Manager</div>
+    <nav class="nav" id="nav">
+      <a data-page="dashboard"><span class="ico">▦</span>仪表盘</a>
+      <a data-page="containers"><span class="ico">▣</span>容器</a>
+      <a data-page="create"><span class="ico">＋</span>创建</a>
+      <a data-page="templates"><span class="ico">▤</span>模板</a>
+      <a data-page="settings"><span class="ico">⚙</span>设置</a>
+      <a data-page="logs"><span class="ico">≡</span>日志</a>
+    </nav>
+    <div class="foot" id="foot">fnOS</div>
+  </aside>
+
+  <!-- 主区 -->
+  <div class="main">
+    <div class="topbar">
+      <h1 id="page-title">容器</h1>
+      <span class="pill" id="stats-pill" style="display:none"></span>
+      <div class="right" id="topbar-right"></div>
+    </div>
+    <div class="content">
+      <!-- 主从双栏：容器页专用 -->
+      <div id="master-col" class="master" style="display:none">
+        <div id="roster"></div>
+      </div>
+      <div id="detail-col" class="detail" style="display:none"></div>
+      <!-- 独立页面 -->
+      <div id="page" class="page" style="display:none"></div>
+    </div>
+  </div>
+
+  <script type="module" src="src/main.js"></script>
+</body>
+</html>

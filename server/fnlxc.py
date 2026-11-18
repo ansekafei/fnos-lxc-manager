@@ -4709,7 +4709,6 @@ if HAS_AIOHTTP:
             ("DELETE", "/api/lxc/{name}/backup/{file}", handle_delete_backup),
             ("POST", "/api/lxc/{name}/backup/{file}/restore", handle_restore_backup),
             ("GET", "/api/lxc/{name}/restore/{file}/progress", handle_restore_progress),
-            ("POST", "/api/lxc/create/from-backup", handle_create_from_backup),
             ("GET", "/api/lxc/create/{name}/progress", handle_create_progress),
             ("POST", "/api/lxc/{name}/migrate", handle_migrate),
             ("PUT", "/api/lxc/{name}/description", handle_set_description),
