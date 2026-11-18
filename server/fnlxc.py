@@ -70,7 +70,7 @@ logger.info("HOME=%s", os.environ.get("HOME", "NOT SET"))
 
 # 版本号：必须与仓库根目录 manifest 的 version 保持一致（构建包版本取 manifest，
 # /api/health 与 /api/version 返回此值），升级时两处一起改。
-APP_VERSION = "3.3.2"
+APP_VERSION = "3.3.3"
 # --- Paths ---
 APP_ROOT = os.path.normpath(os.environ.get("TRIM_APPDEST", os.path.join(os.path.dirname(os.path.abspath(__file__)), "..")))
 UI_DIR = os.path.join(APP_ROOT, "ui")
@@ -2697,6 +2697,30 @@ if HAS_AIOHTTP:
         meta, _ = read_metadata(name)
         if meta:
             info.update(meta)
+        # 网络补充字段（网关/DNS）：从容器 config 解析；运行中被锁（423）则跳过
+        try:
+            cfg_path = get_container_config_path(name)
+            with open(cfg_path, encoding="utf-8") as f:
+                cfg = f.read()
+            def _cfg_val(key):
+                m = re.search(rf"^{re.escape(key)}\s*=\s*(.+)$", cfg, re.M)
+                return m.group(1).strip() if m else ""
+            net = {}
+            if _cfg_val("lxc.net.0.ipv4.gateway"):
+                net["ipv4_gateway"] = _cfg_val("lxc.net.0.ipv4.gateway")
+            if _cfg_val("lxc.net.0.ipv6.gateway"):
+                net["ipv6_gateway"] = _cfg_val("lxc.net.0.ipv6.gateway")
+            dns = [v.strip() for v in _cfg_val("lxc.net.0.nameserver").split() if v.strip()]
+            if dns:
+                net["dns"] = dns
+            if _cfg_val("lxc.net.0.link"):
+                net["link"] = _cfg_val("lxc.net.0.link")
+            if _cfg_val("lxc.net.0.type"):
+                net["type"] = _cfg_val("lxc.net.0.type")
+            if net:
+                info["network_detail"] = net
+        except Exception:
+            pass  # 运行中 config 被锁或读取失败：不给 network_detail，前端只显示 IP
         return web.json_response({"success": True, "data": info})
 
     async def handle_get(request):

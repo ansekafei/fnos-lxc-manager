@@ -48,7 +48,23 @@ async function refreshInfo() {
   if (!selected) return;
   try {
     const info = await getContainerInfo(selected);
-    if (getState().selected === selected) setState({ info }, ['info']);
+    if (getState().selected !== selected) return;
+    setState({ info }, ['info']);
+    // 同步回列表数据：状态/CPU/内存变化时左侧 roster 跟着走（列表接口不再单独轮询）
+    const { containers } = getState();
+    const i = containers.findIndex((c) => c.name === selected);
+    if (i >= 0) {
+      const c = containers[i];
+      const patch = {
+        state: info.state, cpu_usage: info.cpu_usage, pid: info.pid,
+        memory_used: info.memory_used, memory_limit: info.memory_limit,
+        processes: info.processes, ipv4: info.ipv4 || [], ips: info.ips || [],
+      };
+      if (Object.keys(patch).some((k) => JSON.stringify(c[k]) !== JSON.stringify(patch[k]))) {
+        const next = containers.slice(); next[i] = { ...c, ...patch };
+        setState({ containers: next }, ['containers']);
+      }
+    }
   } catch { /* 轮询失败静默，下次再试 */ }
 }
 
@@ -143,11 +159,16 @@ function renderOverview(body) {
 
   const nets = (info.network || info.interfaces || []);
   const v4 = info.ipv4?.length ? info.ipv4 : (info.ips || []);
+  const nd = info.network_detail || {};
   if (nets.length) {
     fillKv(body, '#ov-net', nets.slice(0, 5).map((n) => [n.name || n.interface || 'eth0', n.ip || n.address || '—']));
-  } else if (v4.length) {
+  } else if (v4.length || Object.keys(nd).length) {
     const rows = v4.slice(0, 5).map((ip, i) => [v4.length > 1 ? `IPv4 ${i + 1}` : 'IPv4', ip]);
     (info.ipv6 || []).slice(0, 2).forEach((ip, i) => rows.push([info.ipv6.length > 1 ? `IPv6 ${i + 1}` : 'IPv6', ip]));
+    if (nd.ipv4_gateway) rows.push(['网关', nd.ipv4_gateway]);
+    if (nd.ipv6_gateway) rows.push(['IPv6 网关', nd.ipv6_gateway]);
+    if (nd.dns?.length) rows.push(['DNS', nd.dns.join(', ')]);
+    if (nd.type || nd.link) rows.push([nd.type === 'veth' ? '桥接' : '网络类型', nd.link || nd.type]);
     fillKv(body, '#ov-net', rows);
   } else {
     fillKv(body, '#ov-net', [['IPv4', '—']]);
@@ -201,6 +222,8 @@ export async function onAction(act) {
     toastOk(`${selected} ${act} 指令已下发`);
     await refreshInfo();
     render();
+    // 启停是异步过程：3s 后再拉一次确认最终状态
+    setTimeout(() => { if (getState().selected === selected) { refreshInfo(); render(); } }, 3000);
   } catch (e) { toastErr(`${act} 失败：${e.message}`); }
 }
 
