@@ -240,5 +240,11 @@ function renderEmpty() {
 const fmtVal = (v) => (v == null ? '—' : Number(v).toFixed(1));
 const clamp = (v) => Math.max(0, Math.min(100, Number(v) || 0));
 const fmtMB = (b) => (b == null ? '—' : `${(b / 1024 / 1024).toFixed(0)} MB`);
-const fmtGB = (b) => (b == null ? '—' : `${(b / 1024 / 1024 / 1024).toFixed(1)} GB`);
+const fmtGB = (b) => {
+  if (b == null) return '—';
+  const gb = b / 1024 ** 3;
+  // 小于 0.5 GB 时按 MB 显示，避免 33MB 这种小容器显示成 0.0 GB
+  if (gb < 0.5) return `${(b / 1024 ** 2).toFixed(0)} MB`;
+  return `${gb.toFixed(1)} GB`;
+};
 const fmtSize = (b) => (b == null ? '—' : b > 1024 ** 3 ? `${(b / 1024 ** 3).toFixed(1)} GB` : `${(b / 1024 ** 2).toFixed(0)} MB`);

@@ -70,7 +70,7 @@ logger.info("HOME=%s", os.environ.get("HOME", "NOT SET"))
 
 # 版本号：必须与仓库根目录 manifest 的 version 保持一致（构建包版本取 manifest，
 # /api/health 与 /api/version 返回此值），升级时两处一起改。
-APP_VERSION = "3.3.5"
+APP_VERSION = "3.3.6"
 # --- Paths ---
 APP_ROOT = os.path.normpath(os.environ.get("TRIM_APPDEST", os.path.join(os.path.dirname(os.path.abspath(__file__)), "..")))
 UI_DIR = os.path.join(APP_ROOT, "ui")
@@ -1731,6 +1731,16 @@ def get_container_info(name):
         info["memory_used"] = mem_used
     if mem_limit > 0:
         info["memory_limit"] = mem_limit
+
+    # 进程数兜底：lxc-info 不输出 processes（或返回 0）时直接数 cgroup.procs 行数
+    if not info.get("processes") and info.get("state") == "running":
+        try:
+            p = f"/sys/fs/cgroup/lxc.payload.{name}/cgroup.procs"
+            if os.path.isfile(p):
+                with open(p) as f:
+                    info["processes"] = sum(1 for ln in f if ln.strip())
+        except Exception:
+            pass
 
     return info, None
 
