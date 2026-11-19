@@ -6,13 +6,14 @@ import { containerAction } from '../../api/containers.js';
 import { deleteContainer } from '../../api/containers.js';
 import { listBackups } from '../../api/backups.js';
 import { confirm } from '../../components/confirm.js';
-import { openTerminal } from '../../components/terminal.js';
+
 
 export const TABS = [
   ['overview', '概览'],
   ['settings', '设置'],
   ['network', '网络'],
   ['data', '数据'],
+  ['terminal', '终端'],
 ];
 
 let root = null;
@@ -65,6 +66,8 @@ async function refreshInfo() {
         setState({ containers: next }, ['containers']);
       }
     }
+    // 只在概览 tab 时重绘 body，其他 tab 有自己的 render
+    if (getState().detailTab === 'overview') render();
   } catch { /* 轮询失败静默，下次再试 */ }
 }
 
@@ -95,9 +98,6 @@ export function render() {
     b.dataset.act = act;
     btns.appendChild(b);
   }
-  const tb = document.createElement('button');
-  tb.className = 'btn'; tb.textContent = '终端'; tb.dataset.act = 'terminal';
-  btns.appendChild(tb);
   const db = document.createElement('button');
   db.className = 'btn danger'; db.textContent = '删除'; db.dataset.act = 'delete';
   btns.appendChild(db);
@@ -216,8 +216,7 @@ export async function onAction(act) {
     return;
   }
   if (act === 'terminal') {
-    const body = document.getElementById('detail-body');
-    if (body) openTerminal(selected, body);
+    setState({ detailTab: 'terminal' }, ['detailTab']);
     return;
   }
   try {
@@ -233,6 +232,8 @@ export async function onAction(act) {
 export function onTabClick(tab) {
   setState({ detailTab: tab }, ['detailTab']);
   render();
+  // 切回概览时重新拉数据并恢复轮询
+  if (tab === 'overview') load();
 }
 
 function renderEmpty() {
