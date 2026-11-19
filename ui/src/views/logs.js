@@ -1,6 +1,7 @@
 /* logs.js —— 服务日志页 */
 
 import { getLogs } from '../api/system.js';
+import { getState } from '../state.js';
 
 let root = null;
 let timer = null;
@@ -19,5 +20,9 @@ export async function load() {
     root.innerHTML = `<div class="empty">${e.message}</div>`;
   }
   clearInterval(timer);
-  timer = setInterval(() => { if (document.contains(root)) load(); else clearInterval(timer); }, 10000);
+  // #4 修复：判断 getState().page 而非 document.contains（#page 容器永远在 DOM 里）
+  timer = setInterval(() => {
+    if (getState().page === 'logs') load();
+    else clearInterval(timer);
+  }, 10000);
 }

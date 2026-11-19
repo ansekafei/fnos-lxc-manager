@@ -7,7 +7,6 @@ import { deleteContainer } from '../../api/containers.js';
 import { listBackups } from '../../api/backups.js';
 import { confirm } from '../../components/confirm.js';
 
-
 export const TABS = [
   ['overview', '概览'],
   ['settings', '设置'],
@@ -18,10 +17,12 @@ export const TABS = [
 
 let root = null;
 let pollTimer = null;
+let renderDetailTabFn = null; // main.js 注入，用于跨 tab 重绘 body
 
-export function init(mountEl) {
-  root = mountEl;
-}
+export function init(mountEl) { root = mountEl; }
+
+/** main.js 注入 renderDetailTab 回调，启停后在非概览 tab 也能正确重绘 */
+export function setRenderDetailTab(fn) { renderDetailTabFn = fn; }
 
 /** 选中容器或 tab 变化时调用：拉 info 渲染 */
 export async function load() {
@@ -32,13 +33,14 @@ export async function load() {
   render();
   try {
     const info = await getContainerInfo(selected);
+    // #7 竞态修复：await 返回后复查 selected 是否已切换
+    if (getState().selected !== selected) return;
     setState({ info }, ['info']);
     render();
   } catch (e) {
     toastErr(`加载容器信息失败：${e.message}`);
     renderEmpty();
   }
-  // 运行中每 5s 轮询刷新
   if ((getState().info?.state || '').toLowerCase() === 'running') pollTimer = setInterval(refreshInfo, 5000);
 }
 
@@ -51,7 +53,6 @@ async function refreshInfo() {
     const info = await getContainerInfo(selected);
     if (getState().selected !== selected) return;
     setState({ info }, ['info']);
-    // 同步回列表数据：状态/CPU/内存变化时左侧 roster 跟着走（列表接口不再单独轮询）
     const { containers } = getState();
     const i = containers.findIndex((c) => c.name === selected);
     if (i >= 0) {
@@ -66,19 +67,17 @@ async function refreshInfo() {
         setState({ containers: next }, ['containers']);
       }
     }
-    // 只在概览 tab 时重绘 body，其他 tab 有自己的 render
     if (getState().detailTab === 'overview') render();
-  } catch { /* 轮询失败静默，下次再试 */ }
+  } catch { /* 轮询失败静默 */ }
 }
 
 export function render() {
   const { selected, info, detailTab } = getState();
   if (!root) return;
   root.innerHTML = '';
-
   if (!selected) { renderEmpty(); return; }
 
-  /* 头部：名字 + 状态 + 操作按钮 */
+  /* 头部 */
   const head = document.createElement('div');
   head.className = 'd-head';
   const running = (info?.state || '').toLowerCase() === 'running';
@@ -115,12 +114,13 @@ export function render() {
   }
   root.appendChild(tabs);
 
-  /* tab 内容容器：由各 tab 模块填充（main.js 协调） */
+  /* body 容器 */
   const body = document.createElement('div');
   body.id = 'detail-body';
   root.appendChild(body);
 
   if (detailTab === 'overview') renderOverview(body);
+  // 非概览 tab 时由 main.js renderDetailTab 填充 body
 }
 
 function renderOverview(body) {
@@ -177,7 +177,6 @@ function renderOverview(body) {
     fillKv(body, '#ov-net', [['IPv4', '—']]);
   }
 
-  /* 最近备份异步补齐 */
   listBackups(selected).then((bak) => {
     const list = (bak || []).slice(0, 3);
     const el = body.querySelector('#ov-bak');
@@ -201,7 +200,6 @@ function fillKv(scope, sel, pairs) {
   }
 }
 
-/* 事件处理：由 main.js 委托转发到这里 */
 export async function onAction(act) {
   const { selected } = getState();
   if (!selected) return;
@@ -215,24 +213,20 @@ export async function onAction(act) {
     } catch (e) { toastErr(`删除失败：${e.message}`); }
     return;
   }
-  if (act === 'terminal') {
-    setState({ detailTab: 'terminal' }, ['detailTab']);
-    return;
-  }
   try {
     await containerAction(selected, act);
     toastOk(`${selected} ${act} 指令已下发`);
     await refreshInfo();
-    render();
-    // 启停是异步过程：3s 后再拉一次确认最终状态
-    setTimeout(() => { if (getState().selected === selected) { refreshInfo(); render(); } }, 3000);
+    // #1 修复：非概览 tab 时调用 renderDetailTab 而非 render()，确保 body 正确重绘
+    if (renderDetailTabFn) renderDetailTabFn();
+    else render();
+    setTimeout(() => { if (getState().selected === selected) { refreshInfo(); if (renderDetailTabFn) renderDetailTabFn(); } }, 3000);
   } catch (e) { toastErr(`${act} 失败：${e.message}`); }
 }
 
 export function onTabClick(tab) {
   setState({ detailTab: tab }, ['detailTab']);
-  render();
-  // 切回概览时重新拉数据并恢复轮询
+  // #12 修复：不再手动调 render()，由 main.js 订阅 detailTab 变化统一调用 renderDetailTab
   if (tab === 'overview') load();
 }
 
@@ -240,14 +234,13 @@ function renderEmpty() {
   if (root) root.innerHTML = '<div class="empty" style="padding-top:80px">从左侧选择一个容器查看详情</div>';
 }
 
-/* ---- 格式化工具 ---- */
+/* 格式化工具 */
 const fmtVal = (v) => (v == null ? '—' : Number(v).toFixed(1));
 const clamp = (v) => Math.max(0, Math.min(100, Number(v) || 0));
 const fmtMB = (b) => (b == null ? '—' : `${(b / 1024 / 1024).toFixed(0)} MB`);
 const fmtGB = (b) => {
   if (b == null) return '—';
   const gb = b / 1024 ** 3;
-  // 小于 0.5 GB 时按 MB 显示，避免 33MB 这种小容器显示成 0.0 GB
   if (gb < 0.5) return `${(b / 1024 ** 2).toFixed(0)} MB`;
   return `${gb.toFixed(1)} GB`;
 };

@@ -34,7 +34,10 @@ export function openModal({ title, body, actions = [], onClose }) {
   const close = () => { el.remove(); onClose && onClose(); };
   el.querySelector('.modal-x').addEventListener('click', close);
   el.addEventListener('click', (e) => { if (e.target === el) close(); });
-  el.addEventListener('keydown', (e) => { if (e.key === 'Escape') close(); });
+
+  // #9 修复：Esc 监听挂到 document，弹窗关闭时移除，不依赖 mask 聚焦
+  const onKey = (e) => { if (e.key === 'Escape') { close(); document.removeEventListener('keydown', onKey); } };
+  document.addEventListener('keydown', onKey);
 
   for (const a of actions) {
     const btn = document.createElement('button');

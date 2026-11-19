@@ -80,11 +80,19 @@ function showProg(msg, pct, done) {
 }
 
 function startPoll(fn) {
+  const { selected, detailTab } = getState(); // #8 修复：记录发起任务时的上下文
   const timer = setInterval(async () => {
     try {
       const p = await fn();
       showProg(p.message || '进行中…', p.percent, p.done);
-      if (p.done) { clearInterval(timer); render(document.getElementById('detail-body')); }
+      if (p.done) {
+        clearInterval(timer);
+        // #8 修复：done 后只在仍是原容器+原 tab 时重绘
+        const body = document.getElementById('detail-body');
+        if (body && getState().selected === selected && getState().detailTab === detailTab) {
+          render(body);
+        }
+      }
     } catch { clearInterval(timer); showProg('进度查询失败', 0, true); }
   }, 1500);
 }
@@ -94,7 +102,11 @@ export async function onAction(act, btn) {
   const { selected } = getState();
   if (!selected) return;
   const row = btn?.dataset.row;
-  const refresh = () => render(document.getElementById('detail-body'));
+  // #8 修复：refresh 检查 body 是否存在
+  const refresh = () => {
+    const body = document.getElementById('detail-body');
+    if (body) render(body);
+  };
   try {
     if (act === 'new-snap') {
       const name = prompt('快照名称', `${selected}-${Date.now()}`);

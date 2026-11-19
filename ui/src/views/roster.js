@@ -35,17 +35,17 @@ export function render() {
     el.querySelector('b').textContent = c.name;
     el.querySelector('.nm span').textContent = `${c.os || ''}${c.release ? ' ' + c.release : ''}`;
     el.querySelector('.load').innerHTML = running
-      ? `CPU ${fmtPct(c.cpu_usage)}<br>MEM ${fmtMem(c.memory_used, c.memory_limit)}`
+      ? `CPU ${fmtPct(c.cpu_usage)}<br>MEM ${fmtMem(c.memory_used)}`
       : '—';
     root.appendChild(el);
   }
 }
 
 const fmtPct = (v) => (v == null ? '—' : `${Number(v).toFixed(1)}%`);
-const fmtMem = (used, limit) => {
+// #11 修复：删掉死参数 limit，简化函数签名
+const fmtMem = (used) => {
   if (used == null) return '—';
-  const u = used / 1024 / 1024;
-  return limit ? `${Math.round(u)}MB` : `${Math.round(u)}MB`;
+  return `${Math.round(used / 1024 / 1024)}MB`;
 };
 
 /* 列表点击走事件委托（main.js 统一接管） */

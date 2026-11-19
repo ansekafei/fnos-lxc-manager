@@ -1,34 +1,42 @@
 /* create.js —— 创建容器：官方模板 / 克隆 / 从快照 / 从备份 / 本地（Proxmox 缓存）模板 */
 
-import { toastErr, toastOk } from '../state.js';
+import { toastErr, toastOk, getState } from '../state.js';
 import { listTemplates, listCachedTemplates, createFromTemplate, createFromCopy, createFromSnapshot, createFromBackup, createFromProxmox, createProgress } from '../api/templates.js';
 import { listAllBackups } from '../api/backups.js';
+import { getSettings } from '../api/system.js';
 import { field, input, select } from '../components/field.js';
 
 let root = null;
 const created = []; // 已创建、待轮询进度的 {name}
+let pollTimer = null; // #3 修复：模块级引用，确保只有一个轮询实例
 
 export function init(mountEl) { root = mountEl; }
 
 export async function load() {
   if (!root) return;
+  stopPoll(); // #3 修复：每次 load 先停旧轮询
   root.innerHTML = '<div class="loading">加载中…</div>';
   try {
-    const [templates, cached, backups] = await Promise.all([
+    const [templates, cached, backups, appSettings] = await Promise.all([
       listTemplates().catch(() => []),
       listCachedTemplates().catch(() => []),
       listAllBackups().catch(() => []),
+      getSettings().catch(() => ({})),
     ]);
-    render(templates || [], cached || [], backups || {});
+    render(templates || [], cached || [], backups || {}, appSettings || {});
   } catch (e) {
     root.innerHTML = `<div class="empty">${e.message}</div>`;
   }
 }
 
-function render(templates, cached, backups) {
+function render(templates, cached, backups, appSettings) {
   root.innerHTML = '<h1 style="font-size:var(--fs-xl);margin-bottom:18px">创建容器</h1>';
   const grid = document.createElement('div');
   grid.className = 'grid2';
+
+  // #5 修复：从全局设置读默认网络模式和桥接网卡
+  const defaultNetwork = appSettings.network_type || 'bridge';
+  const defaultBridge = appSettings.bridge || 'lxcbr0';
 
   /* 官方模板 */
   const p1 = panel('从官方模板创建');
@@ -37,20 +45,32 @@ function render(templates, cached, backups) {
   const rel = input({ placeholder: '版本，如 24.04' });
   const arch = select(['amd64', 'arm64', 'i386'], 'amd64');
   const diskGb = input({ placeholder: '根盘大小 (GB)，0=不限', type: 'number', value: '0' });
+  const net1 = select([
+    { value: 'bridge', label: '宿主桥接' },
+    { value: 'nat', label: 'NAT (lxcbr0)' },
+    { value: 'macvlan', label: 'macvlan' },
+    { value: 'none', label: '无网络' },
+  ], defaultNetwork);
   const b1 = btn('创建', 'primary', 'c-tpl');
-  p1.append(field('容器名', name1), field('发行版', tpl), field('版本', rel), field('架构', arch), field('根盘配额 (GB)', diskGb, { hint: '0 = 不限制，共享宿主存储卷可用空间' }), b1);
+  p1.append(field('容器名', name1), field('发行版', tpl), field('版本', rel), field('架构', arch), field('根盘配额 (GB)', diskGb, { hint: '0 = 不限制，共享宿主存储卷可用空间' }), field('网络模式', net1), b1);
 
-  /* 克隆 */
+  /* 克隆 / 快照 / 备份 */
   const p2 = panel('从现有容器克隆 / 快照 / 备份');
   const name2 = input({ placeholder: '新容器名' });
   const src = input({ placeholder: '源容器名' });
   const snap = input({ placeholder: '快照名（可选）' });
   const baks = Object.values(backups).flat();
   const bakSel = select([{ value: '', label: '— 选择备份文件 —' }, ...baks.map((b) => ({ value: b.name || b.file || b, label: `${b.container || ''} ${b.name || b.file || b}` }))]);
+  const net2 = select([
+    { value: 'bridge', label: '宿主桥接' },
+    { value: 'nat', label: 'NAT (lxcbr0)' },
+    { value: 'macvlan', label: 'macvlan' },
+    { value: 'none', label: '无网络' },
+  ], defaultNetwork);
   const b2 = btn('克隆创建', '', 'c-copy');
   const b3 = btn('从快照创建', '', 'c-snap');
   const b4 = btn('从备份创建', '', 'c-bak');
-  p2.append(field('新容器名', name2), field('源容器', src), field('快照（从快照创建时填）', snap), field('备份文件（从备份创建时选）', bakSel), b2, b3, b4);
+  p2.append(field('新容器名', name2), field('源容器', src), field('快照（从快照创建时填）', snap), field('备份文件（从备份创建时选）', bakSel), field('网络模式', net2), b2, b3, b4);
 
   /* 本地模板 */
   const p3 = panel('从本地缓存模板创建（Proxmox）');
@@ -58,15 +78,21 @@ function render(templates, cached, backups) {
   const tf = select(cached.map((c) => ({ value: typeof c === 'string' ? c : c.name || c.file, label: typeof c === 'string' ? c : c.name || c.file })));
   const auto = select([{ value: 'true', label: '开机自启' }, { value: 'false', label: '不自启' }], 'false');
   const unpriv = select([{ value: 'false', label: '特权' }, { value: 'true', label: '非特权' }], 'false');
+  const net3 = select([
+    { value: 'bridge', label: '宿主桥接' },
+    { value: 'nat', label: 'NAT (lxcbr0)' },
+    { value: 'macvlan', label: 'macvlan' },
+    { value: 'none', label: '无网络' },
+  ], defaultNetwork);
   const b5 = btn('创建', '', 'c-local');
-  p3.append(field('容器名', name3), field('模板文件', tf), field('自启', auto), field('权限', unpriv), b5);
+  p3.append(field('容器名', name3), field('模板文件', tf), field('自启', auto), field('权限', unpriv), field('网络模式', net3), b5);
 
   grid.append(p1, p2, p3);
   root.appendChild(grid);
   root.appendChild(panel('创建进度', '创建后此处显示后台任务进度'));
 
-  root._inputs = { name1, tpl, rel, arch, diskGb, name2, src, snap, bakSel, name3, tf, auto, unpriv };
-  startProgressPoll();
+  root._inputs = { name1, tpl, rel, arch, diskGb, net1, name2, src, snap, bakSel, net2, name3, tf, auto, unpriv, net3 };
+  void defaultBridge; // 设置里的 bridge 字段由后端自行读取，前端不再手动传
 }
 
 function panel(title, sub) {
@@ -85,9 +111,14 @@ function btn(label, cls, act) {
   return b;
 }
 
+function stopPoll() { if (pollTimer) { clearInterval(pollTimer); pollTimer = null; } }
+
+// #3 修复：模块级单例轮询，load() 和 onAction 都先 stopPoll() 再启动
 function startProgressPoll() {
-  const timer = setInterval(async () => {
-    if (!created.length) return;
+  stopPoll();
+  if (!created.length) return;
+  pollTimer = setInterval(async () => {
+    if (!created.length) { stopPoll(); return; }
     for (const it of created) {
       try {
         const p = await createProgress(it.name);
@@ -99,7 +130,7 @@ function startProgressPoll() {
         }
       } catch { /* 轮询失败忽略 */ }
     }
-    if (!created.length) clearInterval(timer);
+    if (!created.length) stopPoll();
   }, 2000);
 }
 
@@ -111,27 +142,27 @@ export async function onAction(act) {
     if (act === 'c-tpl') {
       const name = I.name1.value.trim();
       if (!name) return toastErr('请填写容器名');
-      await createFromTemplate({ name, template: I.tpl.value, release: I.rel.value.trim(), arch: I.arch.value, disk_size_gb: parseFloat(I.diskGb.value) || 0 });
+      await createFromTemplate({ name, template: I.tpl.value, release: I.rel.value.trim(), arch: I.arch.value, disk_size_gb: parseFloat(I.diskGb.value) || 0, network_type: I.net1.value });
       created.push({ name }); toastOk('创建任务已开始'); startProgressPoll();
     } else if (act === 'c-copy') {
       const name = I.name2.value.trim(); const source = I.src.value.trim();
       if (!name || !source) return toastErr('请填写新容器名与源容器');
-      await createFromCopy({ name, source });
+      await createFromCopy({ name, source, network_type: I.net2.value });
       created.push({ name }); toastOk('克隆任务已开始'); startProgressPoll();
     } else if (act === 'c-snap') {
       const name = I.name2.value.trim(); const source = I.src.value.trim(); const snapshot = I.snap.value.trim();
       if (!name || !source || !snapshot) return toastErr('请填写新容器名、源容器与快照名');
-      await createFromSnapshot({ name, source, snapshot });
+      await createFromSnapshot({ name, source, snapshot, network_type: I.net2.value });
       created.push({ name }); toastOk('创建任务已开始'); startProgressPoll();
     } else if (act === 'c-bak') {
       const name = I.name2.value.trim(); const backup_name = I.bakSel.value;
       if (!name || !backup_name) return toastErr('请填写新容器名并选择备份文件');
-      await createFromBackup({ name, backup_name });
+      await createFromBackup({ name, backup_name, network_type: I.net2.value });
       created.push({ name }); toastOk('创建任务已开始'); startProgressPoll();
     } else if (act === 'c-local') {
       const name = I.name3.value.trim(); const template_file = I.tf.value;
       if (!name || !template_file) return toastErr('请填写容器名并选择模板');
-      await createFromProxmox({ name, template_file, autostart: I.auto.value === 'true', unprivileged: I.unpriv.value === 'true' });
+      await createFromProxmox({ name, template_file, autostart: I.auto.value === 'true', unprivileged: I.unpriv.value === 'true', network_type: I.net3.value });
       created.push({ name }); toastOk('创建任务已开始'); startProgressPoll();
     }
   } catch (e) { toastErr(`创建失败：${e.message}`); }

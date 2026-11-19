@@ -9,7 +9,9 @@ export function init(navEl, rosterEl) {
     const a = e.target.closest('a[data-page]');
     if (!a) return;
     const page = a.dataset.page;
-    setState({ page, selected: page === 'containers' ? getState().selected : null }, ['page']);
+    // #10 修复：selected 变化也要通知订阅者
+    const newSelected = page === 'containers' ? getState().selected : null;
+    setState({ page, selected: newSelected }, ['page', 'selected']);
   });
 }
 

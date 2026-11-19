@@ -40,6 +40,8 @@ sidebar.init(el.nav, el.roster);
 
 roster.init(el.roster);
 overview.init(el.detail);
+// #1 修复：注入 renderDetailTab 回调，启停后在非概览 tab 也能正确重绘 body
+overview.setRenderDetailTab(renderDetailTab);
 dashboard.init(el.page);
 create.init(el.page);
 templates.init(el.page);
@@ -58,18 +60,21 @@ function showPage(page) {
   topbar.update(topbarRefs, s);
 
   if (isContainers) {
-    overview.render();
     if (s.selected) overview.load();
+    else overview.render();
   } else {
+    // #2 修复：离开容器页时销毁终端
+    dterminal.destroy();
     ({ dashboard, create, templates, settings, logs })[page]?.load?.();
   }
-  void s;
 }
 
 /* ---- 状态订阅：统一重绘 ---- */
 subscribe((state, keys) => {
   if (keys.includes('page')) showPage(state.page);
   if (keys.includes('selected') && state.page === 'containers') {
+    // #2 修复：切容器时销毁旧终端
+    dterminal.destroy();
     roster.render();
     overview.load();
   }
@@ -83,6 +88,8 @@ subscribe((state, keys) => {
 /* tab 内容分发：tab 条在 overview.render() 里画，body 按 detailTab 填充 */
 function renderDetailTab() {
   const { detailTab } = getState();
+  // #2 修复：切走终端 tab 时销毁终端实例
+  if (detailTab !== 'terminal') dterminal.destroy();
   overview.render(); // 画头部 + tab 条 + overview body（若是 overview）
   const body = document.getElementById('detail-body');
   if (!body || detailTab === 'overview') return;
