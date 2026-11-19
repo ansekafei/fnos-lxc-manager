@@ -6,6 +6,9 @@ import { listContainers } from './api/containers.js';
 import { getVersion } from './api/system.js';
 import { toastErr } from './state.js';
 
+import * as sidebar from './components/sidebar.js';
+import * as topbar from './components/topbar.js';
+
 import * as roster from './views/roster.js';
 import * as overview from './views/detail/overview.js';
 import * as dsettings from './views/detail/settings.js';
@@ -17,8 +20,6 @@ import * as create from './views/create.js';
 import * as templates from './views/templates.js';
 import * as settings from './views/settings.js';
 import * as logs from './views/logs.js';
-
-const PAGE_TITLES = { dashboard: '仪表盘', containers: '容器管理', create: '创建容器', templates: '模板', settings: '设置', logs: '日志' };
 
 const $ = (sel) => document.querySelector(sel);
 const el = {
@@ -33,7 +34,10 @@ const el = {
   foot: $('#foot'),
 };
 
-/* ---- 初始化各 view ---- */
+/* ---- 初始化组件与 view ---- */
+const topbarRefs = topbar.init(el.title, el.pill, el.foot);
+sidebar.init(el.nav, el.roster);
+
 roster.init(el.roster);
 overview.init(el.detail);
 dashboard.init(el.page);
@@ -49,9 +53,9 @@ function showPage(page) {
   el.master.style.display = isContainers ? '' : 'none';
   el.detail.style.display = isContainers ? '' : 'none';
   el.page.style.display = isContainers ? 'none' : '';
-  el.title.textContent = PAGE_TITLES[page] || page;
 
-  el.nav.querySelectorAll('a').forEach((a) => a.classList.toggle('on', a.dataset.page === page));
+  sidebar.update(el.nav, page);
+  topbar.update(topbarRefs, s);
 
   if (isContainers) {
     overview.render();
@@ -60,10 +64,6 @@ function showPage(page) {
     ({ dashboard, create, templates, settings, logs })[page]?.load?.();
   }
   void s;
-}
-
-function switchPage(page) {
-  setState({ page, selected: page === 'containers' ? getState().selected : null }, ['page']);
 }
 
 /* ---- 状态订阅：统一重绘 ---- */
@@ -77,7 +77,7 @@ subscribe((state, keys) => {
   if (keys.includes('detailTab') && state.page === 'containers') renderDetailTab();
   if (keys.includes('info') && state.page === 'containers' && state.detailTab === 'overview') overview.render();
   if (keys.includes('stats') && state.page === 'dashboard') dashboard.render();
-  renderTopbar(state);
+  topbar.update(topbarRefs, state);
 });
 
 /* tab 内容分发：tab 条在 overview.render() 里画，body 按 detailTab 填充 */
@@ -90,23 +90,8 @@ function renderDetailTab() {
   ({ settings: dsettings, network: dnetwork, data: ddata, terminal: dterminal })[detailTab]?.render(body);
 }
 
-function renderTopbar(state) {
-  if (state.page === 'containers' && state.containers.length) {
-    const run = state.containers.filter((c) => (c.state || '').toLowerCase() === 'running').length;
-    el.pill.style.display = '';
-    el.pill.textContent = `${run} 运行中 · ${state.containers.length - run} 已停止`;
-  } else {
-    el.pill.style.display = 'none';
-  }
-  if (state.version) el.foot.textContent = `v${state.version} · fnOS`;
-}
-
 /* ---- 全局事件委托（杜绝内联 onclick） ---- */
 document.addEventListener('click', async (e) => {
-  /* 侧边导航 */
-  const navA = e.target.closest('#nav a[data-page]');
-  if (navA) return switchPage(navA.dataset.page);
-
   /* 容器列表选中 */
   const ct = e.target.closest(roster.onClickSelector);
   if (ct) {
@@ -118,7 +103,7 @@ document.addEventListener('click', async (e) => {
   const tab = e.target.closest('.detail .tabs a[data-tab]');
   if (tab) return overview.onTabClick(tab.dataset.tab);
 
-  /* 详情头部动作（启动/停止/重启/终端/删除） */
+  /* 详情头部动作（启动/停止/重启/删除） */
   const act = e.target.closest('.detail .d-head [data-act]');
   if (act) return overview.onAction(act.dataset.act);
 
@@ -152,7 +137,7 @@ async function boot() {
   try {
     const [containers, version] = await Promise.all([listContainers(), getVersion().catch(() => '')]);
     setState({ containers: containers || [], version: version?.version || '' }, ['containers', 'version']);
-    renderTopbar(getState());
+    topbar.update(topbarRefs, getState());
     showPage(getState().page);
   } catch (e) {
     toastErr(`初始化失败：${e.message}`);
