@@ -11,7 +11,7 @@ import * as overview from './views/detail/overview.js';
 import * as dsettings from './views/detail/settings.js';
 import * as dnetwork from './views/detail/network.js';
 import * as ddata from './views/detail/data.js';
-import { openTerminal } from './components/terminal.js';
+import * as dterminal from './views/detail/terminal.js';
 import * as dashboard from './views/dashboard.js';
 import * as create from './views/create.js';
 import * as templates from './views/templates.js';
@@ -87,11 +87,7 @@ function renderDetailTab() {
   const body = document.getElementById('detail-body');
   if (!body || detailTab === 'overview') return;
   body.innerHTML = '';
-  ({ settings: dsettings, network: dnetwork, data: ddata, terminal: null })[detailTab]?.render(body);
-  if (detailTab === 'terminal') {
-    const { selected } = getState();
-    if (selected) openTerminal(selected, body);
-  }
+  ({ settings: dsettings, network: dnetwork, data: ddata, terminal: dterminal })[detailTab]?.render(body);
 }
 
 function renderTopbar(state) {

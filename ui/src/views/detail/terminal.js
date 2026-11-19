@@ -1,33 +1,34 @@
-/* terminal.js —— 容器交互式终端（WebSocket + xterm.js）
- * xterm.js 已 vendor 到 ui/vendor/，零构建直接引用。
+/* detail/terminal.js —— 容器详情 · 终端 tab（xterm.js）
+ * 与其他 tab 平级，render(body) 挂载终端。
  */
 
-import { openTerminalSocket } from '../api/containers.js';
+import { getState } from '../../state.js';
+import { openTerminalSocket } from '../../api/containers.js';
 
-export function openTerminal(name, mount) {
+export function render(body) {
+  const { selected } = getState();
+  if (!selected) { body.innerHTML = '<div class="empty">未选择容器</div>'; return; }
+
   const wrap = document.createElement('div');
   wrap.className = 'term';
-  wrap.innerHTML = `<div class="term-bar"><span>终端 · ${name}</span><button class="btn term-close">断开</button></div><div class="term-body"></div>`;
-  mount.appendChild(wrap);
-  const body = wrap.querySelector('.term-body');
+  wrap.innerHTML = `<div class="term-bar"><span>终端 · ${selected}</span><button class="btn term-close">断开</button></div><div class="term-body"></div>`;
+  body.appendChild(wrap);
+  const termBody = wrap.querySelector('.term-body');
   const closeBtn = wrap.querySelector('.term-close');
 
   let closed = false;
   let ws = null;
   let term = null;
 
-  // 动态加载 xterm（如果还没加载）
   function ensureXterm() {
     return new Promise((resolve, reject) => {
       if (window.Terminal && window.FitAddon) return resolve();
-      // 加载 CSS
       if (!document.querySelector('link[href*="xterm.css"]')) {
         const link = document.createElement('link');
         link.rel = 'stylesheet';
         link.href = '/app/lxcmanager/vendor/xterm.css';
         document.head.appendChild(link);
       }
-      // 加载 JS
       const s1 = document.createElement('script');
       s1.src = '/app/lxcmanager/vendor/xterm.min.js';
       s1.onload = () => {
@@ -46,7 +47,7 @@ export function openTerminal(name, mount) {
     try {
       await ensureXterm();
     } catch (e) {
-      body.innerHTML = `<div style="padding:20px;color:#f87171">${e.message}</div>`;
+      termBody.innerHTML = `<div style="padding:20px;color:#f87171">${e.message}</div>`;
       return;
     }
 
@@ -66,23 +67,21 @@ export function openTerminal(name, mount) {
 
     const fitAddon = new window.FitAddon.FitAddon();
     term.loadAddon(fitAddon);
-    term.open(body);
+    term.open(termBody);
 
-    // 初始 fit + 窗口 resize 时 fit
     setTimeout(() => { try { fitAddon.fit(); } catch { /* ignore */ } }, 50);
     const resizeObserver = new ResizeObserver(() => {
       try { fitAddon.fit(); } catch { /* ignore */ }
     });
-    resizeObserver.observe(body);
+    resizeObserver.observe(termBody);
 
-    term.writeln(`\x1b[1;32m── 正在连接 ${name} 的终端 ──\x1b[0m`);
+    term.writeln(`\x1b[1;32m── 正在连接 ${selected} 的终端 ──\x1b[0m`);
 
-    ws = openTerminalSocket(name);
+    ws = openTerminalSocket(selected);
     ws.binaryType = 'arraybuffer';
 
     ws.onopen = () => {
       term.writeln(`\x1b[1;32m── 已连接 ──\x1b[0m\r\n`);
-      // 发送终端大小
       try {
         const dims = fitAddon.proposeDimensions();
         if (dims) ws.send(JSON.stringify({ cols: dims.cols, rows: dims.rows }));
@@ -107,14 +106,12 @@ export function openTerminal(name, mount) {
       term.writeln('\r\n\x1b[1;31m── 连接错误 ──\x1b[0m');
     };
 
-    // 用户输入 → 发到 WS
     term.onData((data) => {
       if (!closed && ws?.readyState === WebSocket.OPEN) {
         ws.send(data);
       }
     });
 
-    // 终端大小变化 → 通知服务端
     term.onResize(({ cols, rows }) => {
       if (!closed && ws?.readyState === WebSocket.OPEN) {
         ws.send(JSON.stringify({ resize: [cols, rows] }));
@@ -126,18 +123,12 @@ export function openTerminal(name, mount) {
 
   init();
 
-  closeBtn.addEventListener('click', () => api.close());
-
-  const api = {
-    close() {
-      closed = true;
-      try { ws?.close(); } catch { /* ignore */ }
-      try { term?.dispose(); } catch { /* ignore */ }
-      wrap.remove();
-    },
-    el: wrap,
-  };
-  return api;
+  closeBtn.addEventListener('click', () => {
+    closed = true;
+    try { ws?.close(); } catch { /* ignore */ }
+    try { term?.dispose(); } catch { /* ignore */ }
+    wrap.remove();
+  });
 }
 
 if (!document.getElementById('term-style')) {
