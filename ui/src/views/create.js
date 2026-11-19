@@ -36,8 +36,9 @@ function render(templates, cached, backups) {
   const tpl = select(templates.map((t) => ({ value: t.distro || t.name || t, label: t.distro || t.name || t })));
   const rel = input({ placeholder: '版本，如 24.04' });
   const arch = select(['amd64', 'arm64', 'i386'], 'amd64');
+  const diskGb = input({ placeholder: '根盘大小 (GB)，0=不限', type: 'number', value: '0' });
   const b1 = btn('创建', 'primary', 'c-tpl');
-  p1.append(field('容器名', name1), field('发行版', tpl), field('版本', rel), field('架构', arch), b1);
+  p1.append(field('容器名', name1), field('发行版', tpl), field('版本', rel), field('架构', arch), field('根盘配额 (GB)', diskGb, { hint: '0 = 不限制，共享宿主存储卷可用空间' }), b1);
 
   /* 克隆 */
   const p2 = panel('从现有容器克隆 / 快照 / 备份');
@@ -64,7 +65,7 @@ function render(templates, cached, backups) {
   root.appendChild(grid);
   root.appendChild(panel('创建进度', '创建后此处显示后台任务进度'));
 
-  root._inputs = { name1, tpl, rel, arch, name2, src, snap, bakSel, name3, tf, auto, unpriv };
+  root._inputs = { name1, tpl, rel, arch, diskGb, name2, src, snap, bakSel, name3, tf, auto, unpriv };
   startProgressPoll();
 }
 
@@ -110,7 +111,7 @@ export async function onAction(act) {
     if (act === 'c-tpl') {
       const name = I.name1.value.trim();
       if (!name) return toastErr('请填写容器名');
-      await createFromTemplate({ name, template: I.tpl.value, release: I.rel.value.trim(), arch: I.arch.value });
+      await createFromTemplate({ name, template: I.tpl.value, release: I.rel.value.trim(), arch: I.arch.value, disk_size_gb: parseFloat(I.diskGb.value) || 0 });
       created.push({ name }); toastOk('创建任务已开始'); startProgressPoll();
     } else if (act === 'c-copy') {
       const name = I.name2.value.trim(); const source = I.src.value.trim();

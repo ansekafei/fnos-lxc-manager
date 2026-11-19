@@ -70,7 +70,7 @@ logger.info("HOME=%s", os.environ.get("HOME", "NOT SET"))
 
 # 版本号：必须与仓库根目录 manifest 的 version 保持一致（构建包版本取 manifest，
 # /api/health 与 /api/version 返回此值），升级时两处一起改。
-APP_VERSION = "3.3.6"
+APP_VERSION = "3.3.7"
 # --- Paths ---
 APP_ROOT = os.path.normpath(os.environ.get("TRIM_APPDEST", os.path.join(os.path.dirname(os.path.abspath(__file__)), "..")))
 UI_DIR = os.path.join(APP_ROOT, "ui")
@@ -152,6 +152,30 @@ def btrfs_run(args, timeout=120):
         return 124, "", "btrfs 命令超时"
     except Exception as e:
         return 1, "", str(e)
+
+
+def btrfs_qgroup_limit(path, size_bytes):
+    """设置子卷 qgroup 配额。size_bytes=0 表示移除限制。"""
+    limit_str = "none" if not size_bytes or size_bytes <= 0 else str(int(size_bytes))
+    rc, out, err = btrfs_run(["qgroup", "limit", limit_str, path])
+    return rc == 0, err if rc else ""
+
+
+def btrfs_qgroup_show(path):
+    """读取子卷 qgroup 配额，返回 (max_referenced_bytes, referenced_bytes)，无配额返回 (0, 0)"""
+    rc, out, err = btrfs_run(["qgroup", "show", "-re", "--raw", path])
+    if rc != 0:
+        return 0, 0
+    for line in out.strip().splitlines():
+        parts = line.split()
+        if len(parts) >= 5 and parts[0].startswith("0/"):
+            try:
+                max_ref = int(parts[3]) if parts[3] != "none" else 0
+                ref = int(parts[1])
+                return max_ref, ref
+            except ValueError:
+                continue
+    return 0, 0
 
 
 def zfs_run(args, timeout=30, check=True):
@@ -1708,6 +1732,12 @@ def get_container_info(name):
                     info["disk_used"] = int(m.group(1))
         except Exception:
             pass
+        # qgroup 配额
+        try:
+            max_ref, ref = btrfs_qgroup_show(rootfs_path)
+            info["disk_limit"] = max_ref  # 0 = 无限制
+        except Exception:
+            pass
 
     # Network rate: compute delta from previous sample
     now = time.time()
@@ -3053,6 +3083,26 @@ if HAS_AIOHTTP:
         if not ok: return web.json_response({"success": False, "error": err}, status=500)
         return web.json_response({"success": True, "message": "描述已更新"})
 
+    async def handle_set_disk_limit(request):
+        """PUT /api/lxc/{name}/disk-limit — 设置/移除根盘 qgroup 配额（支持运行中热调）"""
+        name = request.match_info["name"]
+        if not validate_container_name(name):
+            return web.json_response({"success": False, "error": "容器名称格式无效"}, status=400)
+        try:
+            body = await request.json()
+        except Exception:
+            return web.json_response({"success": False, "error": "无效的请求数据"}, status=400)
+        disk_size_gb = body.get("disk_size_gb", 0)
+        rootfs_path = os.path.join(LXC_PATH, name, "rootfs")
+        if not os.path.isdir(rootfs_path):
+            return web.json_response({"success": False, "error": "容器 rootfs 不存在"}, status=404)
+        size_bytes = int(disk_size_gb * 1024 ** 3) if disk_size_gb > 0 else 0
+        ok, err = btrfs_qgroup_limit(rootfs_path, size_bytes)
+        if not ok:
+            return web.json_response({"success": False, "error": f"配额设置失败: {err}"}, status=500)
+        logger.info("容器 %s 根盘配额已更新: %s", name, f"{disk_size_gb}GB" if disk_size_gb > 0 else "无限制")
+        return web.json_response({"success": True, "message": f"根盘配额已{'设为 ' + str(disk_size_gb) + ' GB' if disk_size_gb > 0 else '移除'}"})
+
     async def handle_del_description(request):
         name = request.match_info["name"]
         if not validate_container_name(name):
@@ -3498,6 +3548,14 @@ if HAS_AIOHTTP:
                 logger.error("rootfs 子卷创建失败: %s", dataset)
                 return web.json_response({"success": False, "error": f"rootfs 子卷创建失败: {dataset}"}, status=500)
             logger.info("rootfs 子卷 %s 创建成功", full_dataset)
+            # 磁盘配额（可选）
+            disk_size_gb = body.get("disk_size_gb", 0)
+            if disk_size_gb and disk_size_gb > 0:
+                qok, qerr = btrfs_qgroup_limit(full_dataset, int(disk_size_gb * 1024 ** 3))
+                if qok:
+                    logger.info("rootfs qgroup 配额已设置: %s GB", disk_size_gb)
+                else:
+                    logger.warning("rootfs qgroup 配额设置失败: %s", qerr)
             # 写 config 文件
             config_path = os.path.join(LXC_PATH, name)
             os.makedirs(config_path, exist_ok=True)
@@ -4758,6 +4816,7 @@ if HAS_AIOHTTP:
             ("POST", "/api/lxc/{name}/migrate", handle_migrate),
             ("PUT", "/api/lxc/{name}/description", handle_set_description),
             ("DELETE", "/api/lxc/{name}/description", handle_del_description),
+            ("PUT", "/api/lxc/{name}/disk-limit", handle_set_disk_limit),
             ("PUT", "/api/lxc/{name}/autostart", handle_set_autostart),
             ("PUT", "/api/lxc/{name}/mac", handle_set_mac),
             ("PUT", "/api/lxc/{name}/order", handle_set_order),

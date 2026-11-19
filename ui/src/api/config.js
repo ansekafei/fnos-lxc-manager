@@ -28,3 +28,6 @@ export const setOrder = (name, order) => put(p(name, '/order'), { order });
 
 /** PUT .../mac —— {mac} */
 export const setMac = (name, mac) => put(p(name, '/mac'), { mac });
+
+/** PUT .../disk-limit —— {disk_size_gb}，0=移除配额 */
+export const setDiskLimit = (name, { disk_size_gb }) => put(p(name, '/disk-limit'), { disk_size_gb });

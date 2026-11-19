@@ -3,7 +3,7 @@
  */
 
 import { getState, toastErr, toastOk } from '../../state.js';
-import { getConfig, updateConfig, setLimits, setDescription, deleteDescription, setAutostart, setOrder, setMac } from '../../api/config.js';
+import { getConfig, updateConfig, setLimits, setDescription, deleteDescription, setAutostart, setOrder, setMac, setDiskLimit } from '../../api/config.js';
 import { field, input, textarea } from '../../components/field.js';
 import { confirm } from '../../components/confirm.js';
 import { ApiError } from '../../api/client.js';
@@ -27,15 +27,17 @@ export function render(body) {
 function renderLimits(el, info) {
   const cpuIn = input({ value: info.cpu_limit ?? info.cpus ?? '' , placeholder: '如 2 或 0-3' });
   const memIn = input({ value: info.memory_limit ? Math.round(info.memory_limit / 1024 / 1024) : '', placeholder: 'MB' });
+  const diskIn = input({ value: info.disk_limit ? Math.round(info.disk_limit / 1024 / 1024 / 1024) : '', placeholder: 'GB，0=不限' });
   const save = document.createElement('button');
   save.className = 'btn primary'; save.textContent = '保存限制'; save.dataset.stAct = 'save-limits';
-  save.dataset.cpuIn = '1'; save.dataset.memIn = '1';
+  save.dataset.cpuIn = '1'; save.dataset.memIn = '1'; save.dataset.diskIn = '1';
   el.append(
     field('CPU 核心数', cpuIn, { hint: '数字或 cpuset 形式（0-3 / 0,2）' }),
     field('内存（MB）', memIn),
+    field('根盘配额（GB）', diskIn, { hint: 'btrfs qgroup 配额，0=不限。运行中也可调整' }),
     save,
   );
-  el._inputs = { cpuIn, memIn };
+  el._inputs = { cpuIn, memIn, diskIn };
 }
 
 function renderMeta(el, info) {
@@ -83,7 +85,11 @@ export async function onAction(act, btn) {
     if (act === 'save-limits') {
       const cpu = inputs.cpuIn.value.trim();
       const mem = inputs.memIn.value.trim();
+      const disk = inputs.diskIn.value.trim();
       await setLimits(selected, { cpu: cpu || undefined, memory: mem ? Number(mem) : undefined });
+      if (disk !== undefined) {
+        await setDiskLimit(selected, { disk_size_gb: disk ? Number(disk) : 0 });
+      }
       toastOk('资源限制已保存');
     } else if (act === 'save-meta') {
       const desc = inputs.descIn.value;
