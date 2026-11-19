@@ -1,5 +1,5 @@
-/* terminal.js —— 容器交互式终端（WebSocket + xterm 风格）
- * 零构建，不引外部库。字符级输入 + 输出缓冲渲染。
+/* terminal.js —— 容器交互式终端（WebSocket + xterm.js）
+ * xterm.js 已 vendor 到 ui/vendor/，零构建直接引用。
  */
 
 import { openTerminalSocket } from '../api/containers.js';
@@ -7,129 +7,132 @@ import { openTerminalSocket } from '../api/containers.js';
 export function openTerminal(name, mount) {
   const wrap = document.createElement('div');
   wrap.className = 'term';
-  wrap.innerHTML = `<div class="term-bar"><span>终端 · ${name}</span><button class="btn term-close">断开</button></div><pre class="term-out" tabindex="0"></pre>`;
+  wrap.innerHTML = `<div class="term-bar"><span>终端 · ${name}</span><button class="btn term-close">断开</button></div><div class="term-body"></div>`;
   mount.appendChild(wrap);
-  const out = wrap.querySelector('.term-out');
+  const body = wrap.querySelector('.term-body');
   const closeBtn = wrap.querySelector('.term-close');
 
-  let line = '';
-  const history = [];
-  let histIdx = -1;
   let closed = false;
+  let ws = null;
+  let term = null;
 
-  // 输出缓冲：服务端数据先存数组，再一次性渲染
-  let buf = [];
-  const MAX_BUF = 500; // 最多保留 500 行
-
-  function flush() {
-    // 移除旧的输入行（最后一个 .term-line）
-    const prev = out.querySelector('.term-line:last-child');
-    if (prev) prev.remove();
-
-    // 追加缓冲的输出
-    if (buf.length) {
-      const text = buf.join('');
-      // 按 \n 拆行，逐行 append
-      const lines = text.split('\n');
-      for (const l of lines) {
-        if (l) {
-          const div = document.createElement('div');
-          div.textContent = l;
-          out.appendChild(div);
-        }
+  // 动态加载 xterm（如果还没加载）
+  function ensureXterm() {
+    return new Promise((resolve, reject) => {
+      if (window.Terminal && window.FitAddon) return resolve();
+      // 加载 CSS
+      if (!document.querySelector('link[href*="xterm.css"]')) {
+        const link = document.createElement('link');
+        link.rel = 'stylesheet';
+        link.href = '/app/lxcmanager/vendor/xterm.css';
+        document.head.appendChild(link);
       }
-      buf = [];
-    }
-
-    // 裁剪历史行
-    while (out.children.length > MAX_BUF + 1) {
-      out.removeChild(out.firstChild);
-    }
-
-    // 渲染输入行
-    const lineDiv = document.createElement('div');
-    lineDiv.className = 'term-line';
-    lineDiv.innerHTML = `<span style="color:var(--sub)">$</span> ${esc(line)}<span class="cursor"> </span>`;
-    out.appendChild(lineDiv);
-    out.scrollTop = out.scrollHeight;
+      // 加载 JS
+      const s1 = document.createElement('script');
+      s1.src = '/app/lxcmanager/vendor/xterm.min.js';
+      s1.onload = () => {
+        const s2 = document.createElement('script');
+        s2.src = '/app/lxcmanager/vendor/xterm-addon-fit.min.js';
+        s2.onload = () => resolve();
+        s2.onerror = () => reject(new Error('xterm-addon-fit 加载失败'));
+        document.head.appendChild(s2);
+      };
+      s1.onerror = () => reject(new Error('xterm 加载失败'));
+      document.head.appendChild(s1);
+    });
   }
 
-  const esc = (s) => s.replace(/[&<>]/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;' }[c]));
-
-  // 过滤 ANSI ESC 序列（颜色、光标移动等）
-  function stripAnsi(s) {
-    return s.replace(/\x1b\[[0-9;]*[a-zA-Z]/g, '').replace(/\x1b\][^\x07]*\x07/g, '').replace(/\x1b[=>]/g, '');
-  }
-
-  const ws = openTerminalSocket(name);
-  ws.onopen = () => {
-    buf.push(`── 已连接 ${name} 的终端 ──\n`);
-    flush();
-    // 发送终端大小
+  async function init() {
     try {
-      const cols = Math.floor(out.clientWidth / 8) || 80;
-      const rows = Math.floor(out.clientHeight / 20) || 24;
-      ws.send(JSON.stringify({ cols, rows }));
-    } catch { /* ignore */ }
-  };
-  ws.onmessage = (e) => {
-    if (closed) return;
-    const data = typeof e.data === 'string' ? e.data : new TextDecoder().decode(e.data);
-    buf.push(stripAnsi(data));
-    flush();
-  };
-  ws.onclose = () => {
-    if (closed) return;
-    buf.push('\n── 连接已断开 ──\n');
-    flush();
-  };
-  ws.onerror = () => {
-    buf.push('\n── 连接错误 ──\n');
-    flush();
-  };
-
-  out.addEventListener('keydown', (e) => {
-    if (closed) return;
-    if (e.key === 'Enter') {
-      e.preventDefault();
-      history.push(line); histIdx = history.length;
-      ws.send(line + '\n');
-      buf.push(`$ ${line}\n`);
-      line = ''; flush();
-    } else if (e.key === 'Backspace') {
-      e.preventDefault();
-      line = line.slice(0, -1); flush();
-    } else if (e.key === 'ArrowUp') {
-      e.preventDefault();
-      if (histIdx > 0) { line = history[--histIdx]; flush(); }
-    } else if (e.key === 'ArrowDown') {
-      e.preventDefault();
-      line = histIdx < history.length - 1 ? history[++histIdx] : ''; flush();
-    } else if (e.key === 'Tab') {
-      e.preventDefault();
-      ws.send('\t');
-    } else if (e.key === 'c' && e.ctrlKey) {
-      e.preventDefault();
-      ws.send('\x03'); // Ctrl+C
-    } else if (e.key === 'd' && e.ctrlKey) {
-      e.preventDefault();
-      ws.send('\x04'); // Ctrl+D
-    } else if (e.key === 'l' && e.ctrlKey) {
-      e.preventDefault();
-      ws.send('\x0c'); // Ctrl+L
-    } else if (e.key.length === 1 && !e.ctrlKey && !e.metaKey) {
-      e.preventDefault();
-      line += e.key; flush();
+      await ensureXterm();
+    } catch (e) {
+      body.innerHTML = `<div style="padding:20px;color:#f87171">${e.message}</div>`;
+      return;
     }
-  });
+
+    term = new window.Terminal({
+      fontFamily: 'ui-monospace, SFMono-Regular, Menlo, monospace',
+      fontSize: 13,
+      lineHeight: 1.4,
+      cursorBlink: true,
+      cursorStyle: 'block',
+      theme: {
+        background: '#0b1220',
+        foreground: '#d7e3f4',
+        cursor: '#7fb3ff',
+        selection: 'rgba(127, 179, 255, 0.3)',
+      },
+    });
+
+    const fitAddon = new window.FitAddon.FitAddon();
+    term.loadAddon(fitAddon);
+    term.open(body);
+
+    // 初始 fit + 窗口 resize 时 fit
+    setTimeout(() => { try { fitAddon.fit(); } catch { /* ignore */ } }, 50);
+    const resizeObserver = new ResizeObserver(() => {
+      try { fitAddon.fit(); } catch { /* ignore */ }
+    });
+    resizeObserver.observe(body);
+
+    term.writeln(`\x1b[1;32m── 正在连接 ${name} 的终端 ──\x1b[0m`);
+
+    ws = openTerminalSocket(name);
+    ws.binaryType = 'arraybuffer';
+
+    ws.onopen = () => {
+      term.writeln(`\x1b[1;32m── 已连接 ──\x1b[0m\r\n`);
+      // 发送终端大小
+      try {
+        const dims = fitAddon.proposeDimensions();
+        if (dims) ws.send(JSON.stringify({ cols: dims.cols, rows: dims.rows }));
+      } catch { /* ignore */ }
+    };
+
+    ws.onmessage = (e) => {
+      if (closed || !term) return;
+      if (e.data instanceof ArrayBuffer) {
+        term.write(new Uint8Array(e.data));
+      } else {
+        term.write(e.data);
+      }
+    };
+
+    ws.onclose = () => {
+      if (closed) return;
+      term.writeln('\r\n\x1b[1;31m── 连接已断开 ──\x1b[0m');
+    };
+
+    ws.onerror = () => {
+      term.writeln('\r\n\x1b[1;31m── 连接错误 ──\x1b[0m');
+    };
+
+    // 用户输入 → 发到 WS
+    term.onData((data) => {
+      if (!closed && ws?.readyState === WebSocket.OPEN) {
+        ws.send(data);
+      }
+    });
+
+    // 终端大小变化 → 通知服务端
+    term.onResize(({ cols, rows }) => {
+      if (!closed && ws?.readyState === WebSocket.OPEN) {
+        ws.send(JSON.stringify({ resize: [cols, rows] }));
+      }
+    });
+
+    term.focus();
+  }
+
+  init();
 
   closeBtn.addEventListener('click', () => api.close());
-  setTimeout(() => out.focus(), 50);
 
   const api = {
     close() {
       closed = true;
-      try { ws.close(); } catch { /* ignore */ }
+      try { ws?.close(); } catch { /* ignore */ }
+      try { term?.dispose(); } catch { /* ignore */ }
       wrap.remove();
     },
     el: wrap,
@@ -141,12 +144,10 @@ if (!document.getElementById('term-style')) {
   const s = document.createElement('style');
   s.id = 'term-style';
   s.textContent = `
-.term{background:#0b1220;border-radius:var(--radius);overflow:hidden;display:flex;flex-direction:column;height:100%}
+.term{display:flex;flex-direction:column;height:100%;background:#0b1220;border-radius:var(--radius);overflow:hidden}
 .term-bar{display:flex;justify-content:space-between;align-items:center;padding:8px 14px;color:#cbd5e1;font-size:12.5px;background:#101a2c;flex-shrink:0}
-.term-out{flex:1;padding:12px 14px;overflow:auto;color:#d7e3f4;font:12.5px/1.6 ui-monospace,SFMono-Regular,Menlo,monospace;outline:none;white-space:pre-wrap;word-break:break-all;min-height:300px}
-.term-out div{min-height:1.6em}
-.term .cursor{display:inline-block;width:7px;height:14px;background:#7fb3ff;vertical-align:-2px;animation:blink 1s step-start infinite}
-@keyframes blink{50%{opacity:0}}
+.term-body{flex:1;min-height:400px;padding:8px}
+.term-body .xterm{height:100%}
 `;
   document.head.appendChild(s);
 }
