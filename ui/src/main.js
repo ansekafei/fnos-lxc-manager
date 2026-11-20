@@ -41,7 +41,11 @@ sidebar.init(el.nav, el.roster);
 roster.init(el.roster);
 overview.init(el.detail);
 // #1 修复：注入 renderDetailTab 回调，启停后在非概览 tab 也能正确重绘 body
-overview.setRenderDetailTab(renderDetailTab);
+if (typeof overview.setRenderDetailTab === 'function') {
+  overview.setRenderDetailTab(renderDetailTab);
+} else {
+  console.warn('[main] overview.setRenderDetailTab 缺失，可能是缓存了旧模块');
+}
 dashboard.init(el.page);
 create.init(el.page);
 templates.init(el.page);
@@ -152,7 +156,7 @@ async function boot() {
   }
 }
 
-/* 模块已执行到这里的信号：index.html 里的启动诊断脚本靠它判断 UI 是否活着 */
-window.__uiBooted = true;
-
 boot();
+
+/* 模块完整执行到底的信号：index.html 里的启动诊断脚本靠它判断 UI 是否活着 */
+window.__uiBooted = true;

@@ -20,6 +20,11 @@ for d in ui server mcp templates; do
 done
 rm -rf "${APP}/server/__pycache__" 2>/dev/null || true
 
+# 给 ES Module 的 import / vendor 引用打版本戳（防止浏览器缓存旧模块导致升级后白屏）
+if [ -n "${STAMP:-}" ] && [ -d "${APP}/ui" ]; then
+    python3 "${ROOT}/stamp_ui.py" "${STAMP}" "${APP}/ui"
+fi
+
 echo "${VERSION}" > "${APP}/.version"
 ( cd "${APP}" && tar -czf "${SRC}/app.tgz" .version * )
 MD5="$(md5sum "${SRC}/app.tgz" | cut -d' ' -f1)"

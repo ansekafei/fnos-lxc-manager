@@ -99,8 +99,8 @@ check "$SERVER"   "APP_VERSION = \"${NEW}\""
 [ -f "$INDEX" ] && check "$INDEX" "?v=${STAMP}"
 echo "✓ 版本已同步到 manifest / server / ui 缓存戳"
 
-# ── 4. 构建 ──
-bash "$ROOT/build.sh"
+# ── 4. 构建（把缓存戳传给 build.sh，用于给模块 import 打戳）──
+STAMP="$STAMP" bash "$ROOT/build.sh"
 
 # ── 校验产物 ──
 OUT="$ROOT/dist/lxcmanager-x86-${NEW}.fpk"
@@ -116,10 +116,12 @@ with tarfile.open(fileobj=io.BytesIO(d)) as t:
     s = t.extractfile(next(n for n in names if n.endswith("server/fnlxc.py"))).read().decode()
     ui = t.extractfile(next(n for n in names if n.endswith("ui/index.html"))).read().decode()
     av = t.extractfile(next(n for n in names if n.endswith(".version"))).read().decode().strip()
+    mj = t.extractfile(next(n for n in names if n.endswith("ui/src/main.js"))).read().decode()
 assert f"version               = {ver}" in m, "manifest 版本不符"
 assert f'APP_VERSION = "{ver}"' in s, "server 版本不符"
 assert av == ver, f".version={av} 不符"
 assert f"?v={stamp}" in ui, "缓存戳不符"
+assert f".js?v={stamp}" in mj, "模块 import 未打戳"
 print(f"✓ 包内核对通过: manifest / APP_VERSION / .version / 缓存戳 ?v={stamp}")
 PY
 
