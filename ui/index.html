@@ -69,8 +69,8 @@
     setTimeout(function () {
       if (window.__uiBooted) return;
       Promise.all([
-        probe('src/main.js?v=3314'),
-        probe('src/styles/base.css?v=3314')
+        probe('src/main.js?probe=' + Date.now()),
+        probe('src/styles/base.css?probe=' + Date.now())
       ]).then(function (lines) {
         var d = document.createElement('div');
         d.id = 'boot-diag';
