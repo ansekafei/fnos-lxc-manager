@@ -24,6 +24,13 @@ if [ -z "$FPK" ] || [ ! -f "$FPK" ]; then
     exit 1
 fi
 
+# trim-cli 只认 /vol{v}/... 绝对路径，相对路径要在这里转掉；
+# 否则会走到「已清库、未安装」的中间状态，必须手动救回来。
+case "$FPK" in
+    /*) ;;
+    *)  FPK="$(cd "$(dirname "$FPK")" && pwd)/$(basename "$FPK")" ;;
+esac
+
 echo "==> 1/5 备份数据库记录"
 $PSQL -c "SELECT * FROM app WHERE app_name='${APP}';" > "/tmp/${APP}_app_backup_$(date +%s).txt" 2>&1 || true
 
@@ -54,5 +61,5 @@ sleep 8
 echo
 echo "==> 结果"
 $PSQL -t -A -F'|' -c "SELECT 'db: '||version||' / '||status FROM app WHERE app_name='${APP}';" 2>/dev/null
-echo -n "socket: "; ls -l "/usr/local/apps/@appcenter/${APP}/lxcmanager.sock" 2>/dev/null | awk '{print $1, $6, $7, $8}' || echo "缺失"
+echo -n "socket: "; ls -l "/var/apps/${APP}/target/${APP}.sock" 2>/dev/null | awk '{print $1, $6, $7, $8}' || echo "缺失"
 echo -n "版本: "; grep '^version' "/var/apps/${APP}/manifest" 2>/dev/null | awk '{print $3}'
