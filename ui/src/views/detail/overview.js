@@ -4,7 +4,6 @@ import { getState, setState, toastErr, toastOk } from '../../state.js';
 import { getContainerInfo } from '../../api/containers.js';
 import { containerAction } from '../../api/containers.js';
 import { deleteContainer } from '../../api/containers.js';
-import { listBackups } from '../../api/backups.js';
 import { confirm } from '../../components/confirm.js';
 
 export const TABS = [
@@ -146,8 +145,7 @@ function renderOverview(body) {
     <div class="grid2">
       <div class="panel"><div class="ph">基本信息<span></span></div><div class="pb" id="ov-base"></div></div>
       <div class="panel"><div class="ph">网络</div><div class="pb" id="ov-net"></div></div>
-    </div>
-    <div class="panel"><div class="ph">最近备份</div><div class="pb" id="ov-bak"></div></div>`;
+    </div>`;
 
   body.querySelector('.ph span').textContent = info.name || selected;
 
@@ -177,14 +175,6 @@ function renderOverview(body) {
     fillKv(body, '#ov-net', [['IPv4', '—']]);
   }
 
-  listBackups(selected).then((bak) => {
-    const list = (bak || []).slice(0, 3);
-    const el = body.querySelector('#ov-bak');
-    if (!el || el.isConnected === false) return;
-    el.innerHTML = '';
-    if (!list.length) { el.innerHTML = '<div class="empty">暂无备份</div>'; return; }
-    fillKv(el, null, list.map((b) => [b.name || b.file, fmtSize(b.size)]));
-  }).catch(() => {});
 }
 
 function fillKv(scope, sel, pairs) {
@@ -244,4 +234,3 @@ const fmtGB = (b) => {
   if (gb < 0.5) return `${(b / 1024 ** 2).toFixed(0)} MB`;
   return `${gb.toFixed(1)} GB`;
 };
-const fmtSize = (b) => (b == null ? '—' : b > 1024 ** 3 ? `${(b / 1024 ** 3).toFixed(1)} GB` : `${(b / 1024 ** 2).toFixed(0)} MB`);
