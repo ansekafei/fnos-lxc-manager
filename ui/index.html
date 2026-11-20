@@ -56,6 +56,9 @@
     window.addEventListener('unhandledrejection', function (e) {
       errs.push('Promise 拒绝：' + ((e.reason && e.reason.message) || e.reason));
     });
+    document.addEventListener('securitypolicyviolation', function (e) {
+      errs.push('CSP 拦截：' + e.violatedDirective + ' → ' + e.blockedURI);
+    });
 
     function probe(url) {
       return fetch(url, { cache: 'no-store' }).then(function (r) {
