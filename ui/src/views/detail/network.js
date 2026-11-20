@@ -12,8 +12,10 @@ export function render(body) {
 
   body.innerHTML = `
     <div class="panel"><div class="ph">网卡与地址<span>运行期实时</span></div><div class="pb" id="nw-list"></div></div>
-    <div class="panel"><div class="ph">网络模式<span>保存后容器自动重启生效</span></div><div class="pb" id="nw-mode"></div></div>
-    <div class="panel"><div class="ph">网关与 DNS<span>保存后容器自动重启生效</span></div><div class="pb" id="nw-route"></div></div>`;
+    <div class="grid2">
+      <div class="panel"><div class="ph">网络模式<span>保存后容器自动重启生效</span></div><div class="pb" id="nw-mode"></div></div>
+      <div class="panel"><div class="ph">网关与 DNS<span>保存后容器自动重启生效</span></div><div class="pb" id="nw-route"></div></div>
+    </div>`;
 
   fillNicList(body.querySelector('#nw-list'), info);
   load(body, selected);
