@@ -152,4 +152,7 @@ async function boot() {
   }
 }
 
+/* 模块已执行到这里的信号：index.html 里的启动诊断脚本靠它判断 UI 是否活着 */
+window.__uiBooted = true;
+
 boot();

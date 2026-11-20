@@ -4,9 +4,9 @@
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>LXC Manager</title>
-<link rel="stylesheet" href="src/styles/tokens.css?v=3312">
-<link rel="stylesheet" href="src/styles/base.css?v=3312">
-<link rel="stylesheet" href="src/styles/layout.css?v=3312">
+<link rel="stylesheet" href="src/styles/tokens.css?v=3314">
+<link rel="stylesheet" href="src/styles/base.css?v=3314">
+<link rel="stylesheet" href="src/styles/layout.css?v=3314">
 </head>
 <body>
   <!-- 侧边导航 -->
@@ -41,6 +41,50 @@
     </div>
   </div>
 
-  <script type="module" src="src/main.js?v=3312"></script>
+  <script type="module" src="src/main.js?v=3314"></script>
+
+  <!-- 启动诊断：模块没跑起来时把原因画在页面上，省得只有一块白屏 -->
+  <script>
+  (function () {
+    var errs = [];
+    window.__uiErrs = errs;
+    window.addEventListener('error', function (e) {
+      var t = e.target || {};
+      if (t && (t.src || t.href)) errs.push('资源加载失败：' + (t.src || t.href));
+      else errs.push('脚本错误：' + (e.message || e.type) + '（' + (e.filename || '?') + ':' + (e.lineno || 0) + '）');
+    }, true);
+    window.addEventListener('unhandledrejection', function (e) {
+      errs.push('Promise 拒绝：' + ((e.reason && e.reason.message) || e.reason));
+    });
+
+    function probe(url) {
+      return fetch(url, { cache: 'no-store' }).then(function (r) {
+        return r.text().then(function (t) {
+          return url + ' → HTTP ' + r.status + ' · ' + (r.headers.get('content-type') || '无 Content-Type') + ' · ' + t.length + ' 字节'
+            + (t.length < 600 ? '\n    内容：' + t.slice(0, 160).replace(/\s+/g, ' ') : '');
+        });
+      }).catch(function (e) { return url + ' → 请求失败：' + e.message; });
+    }
+
+    setTimeout(function () {
+      if (window.__uiBooted) return;
+      Promise.all([
+        probe('src/main.js?v=3314'),
+        probe('src/styles/base.css?v=3314')
+      ]).then(function (lines) {
+        var d = document.createElement('div');
+        d.id = 'boot-diag';
+        d.style.cssText = 'position:fixed;z-index:99999;left:0;right:0;top:0;max-height:70vh;overflow:auto;padding:12px 16px;'
+          + 'background:#fef2f2;color:#991b1b;border-bottom:2px solid #ef4444;'
+          + 'font:12px/1.7 ui-monospace,SFMono-Regular,Menlo,Consolas,monospace;white-space:pre-wrap';
+        d.textContent = '【启动诊断】界面脚本没跑起来，把这段截图发给开发者\n'
+          + '页面：' + location.href + '\n'
+          + lines.join('\n') + '\n'
+          + (errs.length ? errs.join('\n') : '（没有捕获到任何脚本错误事件）');
+        document.body.appendChild(d);
+      });
+    }, 2000);
+  })();
+  </script>
 </body>
 </html>
