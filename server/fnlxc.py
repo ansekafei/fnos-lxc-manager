@@ -7,6 +7,7 @@ FnLxc — LXC 容器管理后端（完整版 v2）
 import asyncio
 import datetime
 import glob
+import ipaddress
 import json
 import logging
 import logging.handlers  # RotatingFileHandler
@@ -70,7 +71,7 @@ logger.info("HOME=%s", os.environ.get("HOME", "NOT SET"))
 
 # 版本号：必须与仓库根目录 manifest 的 version 保持一致（构建包版本取 manifest，
 # /api/health 与 /api/version 返回此值），升级时两处一起改。
-APP_VERSION = "3.3.19"
+APP_VERSION = "3.3.20"
 # --- Paths ---
 APP_ROOT = os.path.normpath(os.environ.get("TRIM_APPDEST", os.path.join(os.path.dirname(os.path.abspath(__file__)), "..")))
 UI_DIR = os.path.join(APP_ROOT, "ui")
@@ -2788,7 +2789,11 @@ if HAS_AIOHTTP:
                 net["ipv4_gateway"] = _cfg_val("lxc.net.0.ipv4.gateway")
             if _cfg_val("lxc.net.0.ipv6.gateway"):
                 net["ipv6_gateway"] = _cfg_val("lxc.net.0.ipv6.gateway")
-            dns = [v.strip() for v in _cfg_val("lxc.net.0.nameserver").split() if v.strip()]
+            dns = []
+            for _m in re.finditer(r"^lxc\.net\.0\.nameserver\s*=\s*(.+)$", cfg, re.M):
+                for _tok in re.split(r"[\s,]+", _m.group(1).strip()):
+                    if _tok and _tok not in dns:
+                        dns.append(_tok)
             if dns:
                 net["dns"] = dns
             if _cfg_val("lxc.net.0.link"):
@@ -3049,6 +3054,50 @@ if HAS_AIOHTTP:
                 "error": "配置仍在，但容器运行中被 LXC 锁定。停止容器后即可查看和编辑。",
                 "locked": True,
             }, status=423)
+        # ── 网关 / DNS 值校验 ──
+        # 这些值直接写进 LXC config，写坏了容器会解析失败、从列表消失、起不来。
+        _GW_KEYS = {"lxc.net.0.ipv4.gateway": 4, "lxc.net.0.ipv6.gateway": 6}
+        for _k, _fam in _GW_KEYS.items():
+            if _k in updates:
+                _v = str(updates.get(_k) or "").strip()
+                if _v:
+                    try:
+                        _ip = ipaddress.ip_address(_v)
+                    except ValueError:
+                        return web.json_response({
+                            "success": False,
+                            "error": f"{_k} 不是合法 IP：'{_v}'",
+                        }, status=400)
+                    if _ip.version != _fam:
+                        return web.json_response({
+                            "success": False,
+                            "error": f"{_k} 需要 IPv{_fam} 地址，收到 '{_v}'",
+                        }, status=400)
+                updates[_k] = _v
+
+        # DNS 可能多个：LXC 用多行 lxc.net.0.nameserver 表达（一行一个）
+        _NS_KEY = "lxc.net.0.nameserver"
+        ns_list = None
+        if _NS_KEY in updates:
+            ns_list = []
+            for _tok in re.split(r"[\s,]+", str(updates.get(_NS_KEY) or "").strip()):
+                if not _tok:
+                    continue
+                try:
+                    ipaddress.ip_address(_tok)
+                except ValueError:
+                    return web.json_response({
+                        "success": False,
+                        "error": f"DNS 不是合法 IP：'{_tok}'",
+                    }, status=400)
+                if _tok not in ns_list:
+                    ns_list.append(_tok)
+            if len(ns_list) > 3:
+                return web.json_response({
+                    "success": False,
+                    "error": "DNS 最多 3 个",
+                }, status=400)
+
         new_lines = []
         updated_keys = set(updates.keys())
 
@@ -3073,17 +3122,38 @@ if HAS_AIOHTTP:
                 logger.info("handle_config_update: macvlan link %s → %s",
                             updates.get("lxc.net.0.link"), resolved_link)
 
+        ns_written = False
         for line in lines:
             stripped = line.strip()
             if "=" in stripped:
                 k = stripped.split("=", 1)[0].strip()
+                # nameserver 多行：整段替换到第一处出现的位置
+                if k == _NS_KEY and ns_list is not None:
+                    if not ns_written:
+                        for _ns in ns_list:
+                            new_lines.append(f"{_NS_KEY} = {_ns}\n")
+                        ns_written = True
+                    continue
                 if k in updates:
-                    new_lines.append(f"{k} = {updates[k]}\n")
+                    _v = str(updates[k])
+                    if not _v.strip():
+                        # 空值 = 删除这一行（清掉网关/DNS）
+                        updated_keys.discard(k)
+                        continue
+                    new_lines.append(f"{k} = {_v}\n")
                     updated_keys.discard(k)
                     continue
             new_lines.append(line)
+        if ns_list is not None:
+            updated_keys.discard(_NS_KEY)
+            if ns_list and not ns_written:
+                for _ns in ns_list:
+                    new_lines.append(f"{_NS_KEY} = {_ns}\n")
         for k in updated_keys:
-            new_lines.append(f"{k} = {updates[k]}\n")
+            _v = str(updates[k])
+            if not _v.strip():
+                continue
+            new_lines.append(f"{k} = {_v}\n")
         try:
             with open(config_path, "w") as f:
                 f.writelines(new_lines)
