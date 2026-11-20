@@ -131,6 +131,7 @@ function renderOverview(body) {
 
   const memPct = info.memory_limit ? (info.memory_used / info.memory_limit) * 100 : 0;
   const diskPct = info.disk_limit ? (info.disk_used / info.disk_limit) * 100 : 0;
+  const memLabel = `${fmtMB(info.memory_used)}<small> / ${info.memory_limit ? fmtMB(info.memory_limit) : '不限'}</small>`;
   const diskLabel = info.disk_limit
     ? `${fmtGB(info.disk_used)}<small> / ${fmtGB(info.disk_limit)}</small>`
     : `${fmtGB(info.disk_used)}<small> / 不限</small>`;
@@ -138,7 +139,7 @@ function renderOverview(body) {
   body.innerHTML = `
     <div class="cards">
       <div class="card"><div class="k">CPU</div><div class="v">${fmtVal(info.cpu_usage)}<small> %</small></div><div class="bar"><i style="width:${clamp(info.cpu_usage)}%"></i></div></div>
-      <div class="card"><div class="k">内存</div><div class="v">${fmtMB(info.memory_used)}<small> ${info.memory_limit ? '/ ' + fmtMB(info.memory_limit) : ''}</small></div><div class="bar"><i style="width:${clamp(memPct)}%"></i></div></div>
+      <div class="card"><div class="k">内存</div><div class="v">${memLabel}</div><div class="bar"><i style="width:${clamp(memPct)}%"></i></div></div>
       <div class="card"><div class="k">根盘</div><div class="v">${diskLabel}</div><div class="bar"><i style="width:${clamp(diskPct)}%;background:var(--ok)"></i></div></div>
       <div class="card"><div class="k">进程数</div><div class="v">${info.processes ?? '—'}</div></div>
     </div>

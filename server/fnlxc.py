@@ -70,7 +70,7 @@ logger.info("HOME=%s", os.environ.get("HOME", "NOT SET"))
 
 # 版本号：必须与仓库根目录 manifest 的 version 保持一致（构建包版本取 manifest，
 # /api/health 与 /api/version 返回此值），升级时两处一起改。
-APP_VERSION = "3.3.17"
+APP_VERSION = "3.3.18"
 # --- Paths ---
 APP_ROOT = os.path.normpath(os.environ.get("TRIM_APPDEST", os.path.join(os.path.dirname(os.path.abspath(__file__)), "..")))
 UI_DIR = os.path.join(APP_ROOT, "ui")
@@ -1464,6 +1464,36 @@ def read_container_cpu_cores(name):
         pass
     return 0
 
+def parse_mem_limit(raw):
+    """解析 config 里的内存上限写法（"256M" / "268435456" / "max"），返回字节数；不限返回 0。
+
+    lxc-info 只对运行中的容器报告 memory limit，停止后要从 config 兜底，
+    而 config 里可能写成 256M 这种带单位的形式。
+    """
+    if not raw:
+        return 0
+    s = str(raw).strip().lower()
+    if s in ("max", "unlimited", "-1"):
+        return 0
+    m = re.match(r"^([0-9.]+)\s*([kmgt]i?b?|b)?$", s)
+    if not m:
+        return 0
+    try:
+        num = float(m.group(1))
+    except ValueError:
+        return 0
+    unit = (m.group(2) or "b").lower()
+    mult = {
+        "b": 1,
+        "k": 1024, "kb": 1024, "ki": 1024, "kib": 1024,
+        "m": 1024 ** 2, "mb": 1024 ** 2, "mi": 1024 ** 2, "mib": 1024 ** 2,
+        "g": 1024 ** 3, "gb": 1024 ** 3, "gi": 1024 ** 3, "gib": 1024 ** 3,
+        "t": 1024 ** 4, "tb": 1024 ** 4, "ti": 1024 ** 4, "tib": 1024 ** 4,
+    }.get(unit, 1)
+    val = int(num * mult)
+    return val if 0 < val < (1 << 62) else 0
+
+
 def get_container_info(name):
     """获取容器详细状态"""
     result = run_lxc("info", ["-n", name])
@@ -2745,6 +2775,14 @@ if HAS_AIOHTTP:
             def _cfg_val(key):
                 m = re.search(rf"^{re.escape(key)}\s*=\s*(.+)$", cfg, re.M)
                 return m.group(1).strip() if m else ""
+            # 内存上限兜底：容器停止时 lxc-info 没有 memory limit，从 config 补
+            if not info.get("memory_limit"):
+                lim = parse_mem_limit(
+                    _cfg_val("lxc.cgroup2.memory.max")
+                    or _cfg_val("lxc.cgroup.memory.limit_in_bytes")
+                )
+                if lim:
+                    info["memory_limit"] = lim
             net = {}
             if _cfg_val("lxc.net.0.ipv4.gateway"):
                 net["ipv4_gateway"] = _cfg_val("lxc.net.0.ipv4.gateway")
