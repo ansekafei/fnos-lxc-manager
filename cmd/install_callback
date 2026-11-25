@@ -226,7 +226,21 @@ install_lxc_packages()
 
     install_log "需要安装:${missing}"
     DEBIAN_FRONTEND=noninteractive apt-get update -qq 2>/dev/null || true
-    DEBIAN_FRONTEND=noninteractive apt-get install -y -qq $missing 2>&1 | while read line; do
+
+    # 先做一次模拟安装，确认不会连带卸载/清空已有的系统包。
+    # 曾在别处出现过「装 lxc 把宿主既有包拆掉」的情况，这一步只读、不落盘。
+    local plan
+    plan=$(DEBIAN_FRONTEND=noninteractive apt-get -s --no-upgrade install $missing 2>&1) || true
+    if echo "$plan" | grep -qE "^(Remv|Purg) "; then
+        install_log "警告: 安装 ${missing} 会移除已有系统包，已取消自动安装："
+        echo "$plan" | grep -E "^(Remv|Purg) " | while read -r line; do
+            install_log "  ${line}"
+        done
+        install_log "请手动执行: apt install lxc lxc-templates lxcfs bridge-utils"
+        return 1
+    fi
+
+    DEBIAN_FRONTEND=noninteractive apt-get install -y --no-upgrade $missing 2>&1 | while read line; do
         install_log "  apt: $line"
     done
 
@@ -243,7 +257,73 @@ install_lxc_packages()
         return 1
     fi
 
+    # 记录本应用亲手装进来的系统包（台账），卸载时只清这些，
+    # 不动用户原本就装好的 LXC 环境。
+    record_installed_packages
     install_log "LXC 组件安装完成"
+    return 0
+}
+
+# ============================================================================
+# 系统包台账：记录本次安装新引入的包，卸载时按台账精确清理
+# ============================================================================
+LXC_PKG_LEDGER="/var/lib/lxcmanager/host-packages.json"
+
+record_installed_packages()
+{
+    local baseline="${TRIM_PKGVAR:-/var/lib/lxcmanager}/pkg-baseline.txt"
+    mkdir -p "$(dirname "$baseline")" 2>/dev/null || true
+    # 基线只在首次安装时抓一次；重装/升级不覆盖，避免把后来装的东西算成「用户自己的」
+    if [ ! -f "$baseline" ]; then
+        dpkg-query -W -f='${binary:Package}\n' 2>/dev/null | grep -vx "${missing:-}" > "$baseline" || true
+        install_log "已记录系统包基线: $baseline"
+    fi
+
+    mkdir -p "$(dirname "$LXC_PKG_LEDGER")" 2>/dev/null || true
+    chmod 700 "$(dirname "$LXC_PKG_LEDGER")" 2>/dev/null || true
+    python3 - "$baseline" "$LXC_PKG_LEDGER" <<'PYEOF'
+import json, subprocess, sys, os, tempfile
+
+baseline_path, ledger_path = sys.argv[1], sys.argv[2]
+try:
+    with open(baseline_path, encoding="utf-8") as f:
+        before = {line.strip() for line in f if line.strip()}
+except OSError:
+    before = set()
+
+rows = subprocess.run(["dpkg-query", "-W", "-f=${binary:Package}\t${db:Status-Status}\t${Version}\n"],
+                      capture_output=True, text=True).stdout
+manual = set(subprocess.run(["apt-mark", "showmanual"], capture_output=True, text=True).stdout.split())
+
+owned = {}
+for line in rows.splitlines():
+    parts = line.split("\t")
+    if len(parts) != 3:
+        continue
+    name, status, version = parts
+    if status != "installed" or name in before:
+        continue
+    owned[name] = {"package_version": version,
+                   "manual": name in manual or name.split(":")[0] in manual}
+
+if os.path.exists(ledger_path):
+    try:
+        with open(ledger_path, encoding="utf-8") as f:
+            old = json.load(f).get("packages", {})
+        old.update(owned)
+        owned = old
+    except Exception:
+        pass
+
+d = os.path.dirname(ledger_path)
+os.makedirs(d, exist_ok=True)
+fd, tmp = tempfile.mkstemp(dir=d, prefix=".pkgs.")
+with os.fdopen(fd, "w", encoding="utf-8") as f:
+    json.dump({"version": 1, "packages": owned}, f)
+os.chmod(tmp, 0o600)
+os.replace(tmp, ledger_path)
+print("LEDGER_OK %d" % len(owned), file=sys.stderr)
+PYEOF
     return 0
 }
 

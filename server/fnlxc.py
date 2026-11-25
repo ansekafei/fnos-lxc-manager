@@ -71,7 +71,7 @@ logger.info("HOME=%s", os.environ.get("HOME", "NOT SET"))
 
 # 版本号：必须与仓库根目录 manifest 的 version 保持一致（构建包版本取 manifest，
 # /api/health 与 /api/version 返回此值），升级时两处一起改。
-APP_VERSION = "3.3.21"
+APP_VERSION = "3.3.22"
 # --- Paths ---
 APP_ROOT = os.path.normpath(os.environ.get("TRIM_APPDEST", os.path.join(os.path.dirname(os.path.abspath(__file__)), "..")))
 UI_DIR = os.path.join(APP_ROOT, "ui")
@@ -1158,6 +1158,132 @@ def parse_int(text, default=0):
     try: return int(text)
     except: return default
 
+# ── 设置镜像（升级/重装后恢复配置）──────────────────────────
+# fnOS 在应用中心「更新」时实际执行「卸载 + 安装」，会重建 @appconf/@appdata，
+# 把用户设置一起冲掉。这里在应用目录之外留一份镜像，只在配置缺失时用来恢复，
+# 绝不覆盖已存在的配置。
+SETTINGS_MIRROR = "/var/lib/lxcmanager/lxcmanager.cfg"
+SETTINGS_MIRROR_MAX = 64 * 1024
+_SETTINGS_PATH_KEYS = ("default_path", "lxc_path", "backup_path", "cache_dir")
+_CTRL_CHARS = re.compile(r"[\x00-\x1f\x7f]")
+
+
+def _mirror_ok(info):
+    """镜像必须是 root 所有的普通文件，且不带 group/other 权限位。"""
+    import stat as _stat
+    return (_stat.S_ISREG(info.st_mode) and info.st_uid == 0
+            and not info.st_mode & 0o077)
+
+
+def parse_settings_text(text):
+    """严格解析镜像内容为 [(k, v)]；任何一行不合格整份拒绝（ValueError）。"""
+    import posixpath as _pp
+    if text.endswith("\n"):
+        text = text[:-1]
+    if not text:
+        raise ValueError("内容为空")
+    rows, seen = [], set()
+    for no, line in enumerate(text.split("\n"), 1):
+        k, sep, v = line.partition("=")
+        if not sep:
+            raise ValueError(f"第 {no} 行不是 key=value")
+        if k not in DEFAULT_SETTINGS:
+            raise ValueError(f"第 {no} 行键不在白名单内：{k[:40]!r}")
+        if k in seen:
+            raise ValueError(f"键 {k} 重复")
+        if _CTRL_CHARS.search(v):
+            raise ValueError(f"键 {k} 的值含控制字符")
+        if k in _SETTINGS_PATH_KEYS and (not v.startswith("/") or _pp.normpath(v) != v):
+            raise ValueError(f"键 {k} 不是规范的绝对路径")
+        seen.add(k)
+        rows.append((k, v))
+    return rows
+
+
+def read_settings_mirror(path=None):
+    """返回 (rows, error)。不存在为 (None, None)；不合格时 rows=None 并带原因。"""
+    path = path or SETTINGS_MIRROR
+    flags = os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0) | getattr(os, "O_NONBLOCK", 0)
+    try:
+        fd = os.open(path, flags)
+    except FileNotFoundError:
+        return None, None
+    except OSError as exc:
+        return None, f"无法打开（{exc}）"
+    with os.fdopen(fd, "rb") as f:
+        if not _mirror_ok(os.fstat(f.fileno())):
+            return None, "不是 root 所有的普通文件，或权限含 group/other 位"
+        data = f.read(SETTINGS_MIRROR_MAX + 1)
+    if len(data) > SETTINGS_MIRROR_MAX:
+        return None, "文件过大"
+    try:
+        return parse_settings_text(data.decode("utf-8")), None
+    except (UnicodeDecodeError, ValueError) as exc:
+        return None, str(exc)
+
+
+def write_settings_mirror(settings, path=None):
+    """0600 原子写入镜像（目录 0700，临时文件 + os.replace）。"""
+    import stat as _stat
+    import tempfile as _tf
+    path = path or SETTINGS_MIRROR
+    rows = [(k, str(v)) for k, v in dict(settings).items() if k in DEFAULT_SETTINGS]
+    text = "".join(f"{k}={v}\n" for k, v in rows)
+    parse_settings_text(text)          # 渲染后仍要过一遍校验
+    directory = os.path.dirname(path)
+    os.makedirs(directory, mode=0o700, exist_ok=True)
+    info = os.lstat(directory)
+    if (_stat.S_ISLNK(info.st_mode) or not _stat.S_ISDIR(info.st_mode)
+            or info.st_uid != os.geteuid()):
+        raise RuntimeError(f"镜像目录 {directory} 不是本进程所有的普通目录")
+    os.chmod(directory, 0o700)
+    fd, tmp = _tf.mkstemp(dir=directory, prefix=".lxcmanager.cfg.")
+    try:
+        with os.fdopen(fd, "w", encoding="utf-8", newline="\n") as f:
+            f.write(text)
+            f.flush()
+            os.fsync(f.fileno())
+        os.chmod(tmp, 0o600)
+        os.replace(tmp, path)
+    except BaseException:
+        try:
+            os.unlink(tmp)
+        except OSError:
+            pass
+        raise
+
+
+def restore_settings_from_mirror(settings_file=None, mirror=None):
+    """配置缺失时从镜像恢复。返回 (restored, message, rows)；已有配置则什么都不做。"""
+    settings_file = settings_file or SETTINGS_FILE
+    if os.path.lexists(settings_file):
+        return False, None, None
+    rows, error = read_settings_mirror(mirror)
+    if error:
+        return False, f"设置镜像已整份忽略：{error}", None
+    if rows is None:
+        return False, None, None
+    text = "".join(f"{k}={v}\n" for k, v in rows)
+    os.makedirs(os.path.dirname(settings_file) or ".", exist_ok=True)
+    flags = os.O_WRONLY | os.O_CREAT | os.O_EXCL | getattr(os, "O_NOFOLLOW", 0)
+    try:
+        fd = os.open(settings_file, flags, 0o600)
+    except FileExistsError:
+        return False, None, None
+    try:
+        with os.fdopen(fd, "w", encoding="utf-8", newline="\n") as f:
+            f.write(text)
+            f.flush()
+            os.fsync(f.fileno())
+    except BaseException:
+        try:
+            os.unlink(settings_file)
+        except OSError:
+            pass
+        raise
+    return True, f"已从 {mirror or SETTINGS_MIRROR} 恢复设置", dict(rows)
+
+
 # ── Settings ─────────────────────────────────────
 
 def load_settings():
@@ -1182,6 +1308,11 @@ def save_settings(updates):
     with open(SETTINGS_FILE, "w") as f:
         for k, v in s.items():
             f.write(f"{k}={v}\n")
+    # 同步到应用目录外的镜像，供重装/升级后恢复
+    try:
+        write_settings_mirror(s)
+    except Exception as _e:
+        logger.warning("设置镜像写入失败（不影响本次保存）: %s", _e)
     return s
 
 def ensure_storage(pool=None, lxc_path=None, backup_path=None, cache_dir=None):
@@ -4966,6 +5097,15 @@ def main():
     logger.info("FnLxc v2 后端启动中...")
     logger.info("Socket: %s", SOCKET_PATH)
     logger.info("UI Dir: %s", UI_DIR)
+    # 配置被重装/升级冲掉时，先尝试从应用目录外的镜像恢复
+    try:
+        _restored, _msg, _rows = restore_settings_from_mirror()
+        if _msg:
+            logger.warning("设置恢复: %s", _msg)
+        if _restored:
+            logger.info("设置已从镜像恢复（%d 项）", len(_rows or {}))
+    except Exception as e:
+        logger.warning("设置镜像恢复失败: %s", e)
     # 初始化存储后端状态（btrfs 子卷 / 普通目录）
     try:
         detect_zfs_pool(_CFG_POOL)

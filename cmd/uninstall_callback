@@ -481,11 +481,57 @@ fi
 # ── 卸载 LXC 系统包（如勾选）─ ──────────────────────
 if is_true "${REMOVE_LXC}"; then
     install_log "正在卸载 LXC 系统组件..."
-    LXC_PKGS="lxc lxc-templates lxcfs liblxc-common liblxc1 bridge-utils"
-    # 不卸载 libvirt-daemon-driver-lxc（可能被其他应用依赖）
-    DEBIAN_FRONTEND=noninteractive apt-get remove -y -qq $LXC_PKGS 2>&1 | while read line; do install_log "  apt: $line"; done
-    DEBIAN_FRONTEND=noninteractive apt-get autoremove -y -qq 2>/dev/null || true
-    install_log "LXC 系统组件已卸载"
+
+    # 只清理本应用亲手装进来的包（安装时记的台账）。
+    # 用户原本就有的 LXC 环境一律不动；台账缺失或校验不过就整体跳过并提示。
+    LXC_PKG_LEDGER="/var/lib/lxcmanager/host-packages.json"
+    if [ -f "$LXC_PKG_LEDGER" ]; then
+        PURGE_LIST="$(python3 - "$LXC_PKG_LEDGER" <<'PYEOF'
+import json, subprocess, sys
+
+path = sys.argv[1]
+try:
+    with open(path, encoding="utf-8") as f:
+        owned = json.load(f)["packages"]
+except Exception as exc:
+    print("", end="")
+    sys.exit(0)
+
+rows = subprocess.run(["dpkg-query", "-W", "-f=${binary:Package}\t${db:Status-Status}\t${Version}\n"],
+                      capture_output=True, text=True).stdout
+cur = {}
+for line in rows.splitlines():
+    p = line.split("\t")
+    if len(p) == 3:
+        cur[p[0]] = (p[1], p[2])
+
+keep, purge = [], []
+for name, rec in sorted(owned.items()):
+    status, version = cur.get(name, ("", ""))
+    if status in ("", "not-installed"):
+        continue
+    # 版本被系统升级过、或状态异常 → 不自动卸，交给用户
+    if status != "installed" or version != rec.get("package_version"):
+        keep.append("%s(%s)" % (name, version or status))
+        continue
+    purge.append(name)
+
+print(" ".join(purge))
+sys.stderr.write("KEEP:" + " ".join(keep) + "\n")
+PYEOF
+)"
+        if [ -n "${PURGE_LIST}" ]; then
+            install_log "按台账卸载本应用安装的包: ${PURGE_LIST}"
+            # 先用 dpkg 逐包清除，不牵扯依赖解析，避免顺手带走别人的包
+            DEBIAN_FRONTEND=noninteractive dpkg --purge $PURGE_LIST 2>&1 | while read -r line; do install_log "  dpkg: $line"; done
+        else
+            install_log "台账内无需要清理的包（可能已被系统升级或手动移除）"
+        fi
+        install_log "已保留用户自行安装的其它 LXC 组件"
+    else
+        install_log "未找到系统包台账 ${LXC_PKG_LEDGER}，跳过软件包卸载，只清理本应用数据"
+    fi
+    install_log "LXC 系统组件清理完成"
 
     # 清理 LXC 默认路径数据
     rm -rf /var/lib/lxc/* 2>/dev/null || true
