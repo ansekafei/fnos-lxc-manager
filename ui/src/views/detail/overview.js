@@ -1,6 +1,7 @@
 /* detail/overview.js —— 容器详情 · 概览 tab。只读 state 与 api，不持有数据副本 */
 
 import { getState, setState, toastErr, toastOk } from '../../state.js';
+import { distroIcon } from '../../lib/distro.js';
 import { getContainerInfo } from '../../api/containers.js';
 import { containerAction } from '../../api/containers.js';
 import { deleteContainer } from '../../api/containers.js';
@@ -82,8 +83,11 @@ export function render() {
   const head = document.createElement('div');
   head.className = 'd-head';
   const running = (info?.state || '').toLowerCase() === 'running';
+  const _icon = distroIcon(info?.os);
   head.innerHTML = `
-    <span class="st ${running ? 'run' : ''}" style="width:11px;height:11px;border-radius:50%;background:${running ? 'var(--ok)' : 'var(--stop)'}"></span>
+    ${_icon
+      ? `<span class="d-icon"><img src="${_icon}" alt=""></span>`
+      : `<span class="st ${running ? 'run' : ''}" style="width:11px;height:11px;border-radius:50%;background:${running ? 'var(--ok)' : 'var(--stop)'}"></span>`}
     <h2></h2>
     <span class="tag ${running ? 'run' : 'down'}">${running ? '运行中' : '已停止'}</span>
     <div class="btns"></div>`;

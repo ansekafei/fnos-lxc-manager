@@ -25,14 +25,16 @@ export function render(body) {
 }
 
 function renderLimits(el, info) {
-  const cpuIn = input({ value: info.cpu_limit ?? info.cpus ?? '' , placeholder: '如 2 或 0-3' });
+  // cpu_limit 来自后端：0 = 不限，可能是小数（0.5 核）
+  const cpuVal = Number(info.cpu_limit ?? info.cpu_cores ?? 0);
+  const cpuIn = input({ value: cpuVal > 0 ? cpuVal : '', placeholder: '核数（可小数，如 1.5）或 0-3' });
   const memIn = input({ value: info.memory_limit ? Math.round(info.memory_limit / 1024 / 1024) : '', placeholder: 'MB' });
   const diskIn = input({ value: info.disk_limit ? Math.round(info.disk_limit / 1024 / 1024 / 1024) : '', placeholder: 'GB，0=不限' });
   const save = document.createElement('button');
   save.className = 'btn primary'; save.textContent = '保存限制'; save.dataset.stAct = 'save-limits';
   save.dataset.cpuIn = '1'; save.dataset.memIn = '1'; save.dataset.diskIn = '1';
   el.append(
-    field('CPU 核心数', cpuIn, { hint: '数字或 cpuset 形式（0-3 / 0,2）' }),
+    field('CPU 核心数', cpuIn, { hint: '核数（支持 0.5）或 cpuset 形式（0-3 / 0,2），留空=不限' }),
     field('内存（MB）', memIn),
     field('根盘配额（GB）', diskIn, { hint: 'btrfs qgroup 配额，0=不限。运行中也可调整' }),
     save,

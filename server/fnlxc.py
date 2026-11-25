@@ -73,7 +73,7 @@ logger.info("HOME=%s", os.environ.get("HOME", "NOT SET"))
 
 # 版本号：必须与仓库根目录 manifest 的 version 保持一致（构建包版本取 manifest，
 # /api/health 与 /api/version 返回此值），升级时两处一起改。
-APP_VERSION = "3.3.25"
+APP_VERSION = "3.3.27"
 # --- Paths ---
 APP_ROOT = os.path.normpath(os.environ.get("TRIM_APPDEST", os.path.join(os.path.dirname(os.path.abspath(__file__)), "..")))
 UI_DIR = os.path.join(APP_ROOT, "ui")
@@ -1148,6 +1148,7 @@ async def async_list_containers():
             "memory_limit": info.get("memory_limit", 0),
             "cpu_usage": info.get("cpu_usage", 0),
             "cpu_cores": info.get("cpu_cores", 0),
+            "cpu_limit": info.get("cpu_limit", 0),   # 0 = 不限，可为小数（0.5 核）
             "processes": info.get("processes", 0),
             "uptime": info.get("uptime", ""),
             "created_at": info.get("created_at", ""),
@@ -1495,6 +1496,7 @@ def list_containers():
             "memory_limit": info.get("memory_limit", 0),
             "cpu_usage": info.get("cpu_usage", 0),
             "cpu_cores": info.get("cpu_cores", 0),
+            "cpu_limit": info.get("cpu_limit", 0),   # 0 = 不限，可为小数（0.5 核）
             "processes": info.get("processes", 0),
             "uptime": info.get("uptime", ""),
             "created_at": info.get("created_at", ""),
@@ -1534,9 +1536,12 @@ def read_cgroup_cpu_percent(name):
         return 0.0
 
     now = time.time()
-    cpu_cores = read_container_cpu_cores(name)
-    if cpu_cores < 1:
-        cpu_cores = 1
+    # 百分比按“可用容量”算：有效 cpuset 核数与 cpu.max 配额取小；都没有就是宿主全部核数。
+    # 原来把配额 <1 的情况硬按 1 核算，0.5 核的容器会永远只显示到 50%。
+    capacity = read_container_cpu_cores(name)
+    if capacity <= 0:
+        capacity = float(os.cpu_count() or 1)
+    capacity = max(capacity, 0.01)
 
     with _prev_cpu_lock:
         prev = _prev_cpu.get(name)
@@ -1546,9 +1551,9 @@ def read_cgroup_cpu_percent(name):
             dt = now - prev_time
             du = usage - prev_usage
             if dt > 0 and du >= 0:
-                # usage_usec per second / 1_000_000 / num_cores * 100
-                pct = (du / dt) / 1_000_000 / cpu_cores * 100.0
-                return min(pct, 100.0)
+                # usage_usec per second / 1_000_000 / capacity * 100
+                pct = (du / dt) / 1_000_000 / capacity * 100.0
+                return round(min(pct, 100.0), 1)
     return 0.0
 
 def read_cgroup_memory(name):
@@ -1571,28 +1576,40 @@ def read_cgroup_memory(name):
     return used, limit
 
 def read_container_cpu_cores(name):
-    """从容器配置读取分配的 CPU 核心数"""
+    """从容器配置读 CPU 配额，返回核数（可为小数，如 0.5）；0 表示不限。
+
+    cgroup v2 的 cpu.max 是 "<quota> <period>"，配额 = quota/period 个核；
+    quota 为 max 时不限。没有 cpu.max 时退回 cpuset 的核数。
+    """
     config_path = get_container_config_path(name)
+    cpuset = None
     try:
         with open(config_path) as f:
             for line in f:
                 stripped = line.strip()
-                # cgroup v2: lxc.cgroup2.cpu.max = quota period
-                # quota/period = core count  (e.g. 100000 100000 = 1 core)
-                if stripped.startswith("lxc.cgroup2.cpu.max") and "=" in stripped:
-                    val = stripped.split("=", 1)[1].strip()
+                if stripped.startswith("#") or "=" not in stripped:
+                    continue
+                key, val = stripped.split("=", 1)
+                key, val = key.strip(), val.strip()
+                if key in ("lxc.cgroup2.cpu.max", "lxc.cgroup.cpu.cfs_quota_us"):
                     parts = val.split()
-                    if len(parts) == 2:
-                        quota, period = parts[0], parts[1]
+                    if key.endswith("cfs_quota_us"):
+                        # cgroup v1：quota/period，period 默认 100000
                         try:
-                            q, p = int(quota), int(period)
-                            if p > 0 and q > 0:
-                                return max(1, round(q / p))
+                            q = int(parts[0])
+                        except (IndexError, ValueError):
+                            continue
+                        if q > 0:
+                            return round(q / 100000, 2)
+                        continue
+                    if len(parts) >= 2 and parts[0] != "max":
+                        try:
+                            q, p = int(parts[0]), int(parts[1])
                         except ValueError:
-                            pass
-                # cgroup v1 or cpuset: lxc.cgroup.cpuset.cpus = 0,1
-                if stripped.startswith("lxc.cgroup.cpuset.cpus") and "=" in stripped:
-                    val = stripped.split("=", 1)[1].strip()
+                            continue
+                        if p > 0 and q > 0:
+                            return round(q / p, 2)
+                elif key in ("lxc.cgroup.cpuset.cpus", "lxc.cgroup2.cpuset.cpus"):
                     cores = set()
                     for part in val.split(","):
                         part = part.strip()
@@ -1610,10 +1627,10 @@ def read_container_cpu_cores(name):
                             except ValueError:
                                 pass
                     if cores:
-                        return len(cores)
+                        cpuset = float(len(cores))
     except (FileNotFoundError, OSError):
         pass
-    return 0
+    return cpuset or 0
 
 def parse_mem_limit(raw):
     """解析 config 里的内存上限写法（"256M" / "268435456" / "max"），返回字节数；不限返回 0。
@@ -1987,7 +2004,9 @@ def get_container_info(name, allow_ip_attach=True):
 
     # Cgroup v2 直读 CPU/内存
     info["cpu_usage"] = read_cgroup_cpu_percent(name)
-    info["cpu_cores"] = read_container_cpu_cores(name)
+    _cpu_limit = read_container_cpu_cores(name)
+    info["cpu_cores"] = _cpu_limit
+    info["cpu_limit"] = _cpu_limit   # 0 = 不限，可为小数（0.5 核）
     mem_used, mem_limit = read_cgroup_memory(name)
     if mem_used > 0:
         info["memory_used"] = mem_used
@@ -3505,8 +3524,13 @@ if HAS_AIOHTTP:
         except Exception:
             return web.json_response({"success": False, "error": "无效的请求数据"}, status=400)
         cpu = body.get("cpu", "")
-        if cpu and not re.match(r'^[0-9,-]+$', cpu):
-            return web.json_response({"success": False, "error": "CPU 格式无效（需为数字、逗号、减号，如 0-3 或 0,2）"}, status=400)
+        if cpu:
+            cpu = str(cpu).strip()
+            # 两种写法：核数（可小数，如 1.5）或 cpuset（0-3 / 0,2）
+            if not (re.match(r'^\d+(\.\d+)?$', cpu) or re.match(r'^[0-9,\- ]+$', cpu)):
+                return web.json_response(
+                    {"success": False, "error": "CPU 格式无效（核数如 1.5，或 cpuset 如 0-3、0,2）"},
+                    status=400)
         memory_mb = body.get("memory", "")
         config_path = get_container_config_path(name)
         try:
@@ -3539,12 +3563,15 @@ if HAS_AIOHTTP:
 
         if cpu:
             cpu_str = str(cpu).strip()
-            if cpu_str.isdigit():
-                # Core count → cgroup cpu.max quota
-                limit_keys["lxc.cgroup2.cpu.max"] = f"{int(cpu_str) * 100000} 100000"
-                # Also set cpuset for cgroup v1 pinning
-                cpus_list = ",".join(str(i) for i in range(int(cpu_str)))
-                limit_keys["lxc.cgroup.cpuset.cpus"] = cpus_list
+            if re.match(r'^\d+(\.\d+)?$', cpu_str):
+                # 核数 → cgroup cpu.max 配额（quota/period）。支持 0.5 这种小数核：
+                # 只有整数核才顺带写 cpuset 绑定，半个核没法绑。
+                cores = float(cpu_str)
+                limit_keys["lxc.cgroup2.cpu.max"] = f"{int(round(cores * 100000))} 100000"
+                if cores >= 1 and abs(cores - round(cores)) < 1e-9:
+                    limit_keys["lxc.cgroup.cpuset.cpus"] = ",".join(str(i) for i in range(int(round(cores))))
+                else:
+                    limit_keys["lxc.cgroup.cpuset.cpus"] = ""
             else:
                 # Assume it's a cpuset like "0,1,2,3"
                 limit_keys["lxc.cgroup.cpuset.cpus"] = cpu_str

@@ -1,6 +1,7 @@
 /* roster.js —— 左侧容器列表。数据只从 state 读，选中写回 state */
 
 import { getState, setState } from '../state.js';
+import { distroIcon } from '../lib/distro.js';
 
 let root = null;
 
@@ -28,8 +29,9 @@ export function render() {
     const el = document.createElement('div');
     el.className = `ct ${running ? 'run' : ''} ${(c.state || '').toLowerCase() === 'frozen' ? 'frozen' : ''} ${c.name === selected ? 'on' : ''}`;
     el.dataset.name = c.name; // 事件委托用，杜绝内联 onclick
+    const icon = distroIcon(c.os);
     el.innerHTML = `
-      <span class="st"></span>
+      <span class="ci${icon ? ' has' : ''}">${icon ? `<img src="${icon}" alt="">` : ''}<i class="st"></i></span>
       <div class="nm"><b></b><span></span></div>
       <div class="load"></div>`;
     el.querySelector('b').textContent = c.name;
