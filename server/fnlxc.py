@@ -78,7 +78,7 @@ logger.info("HOME=%s", os.environ.get("HOME", "NOT SET"))
 
 # 版本号：必须与仓库根目录 manifest 的 version 保持一致（构建包版本取 manifest，
 # /api/health 与 /api/version 返回此值），升级时两处一起改。
-APP_VERSION = "3.3.29"
+APP_VERSION = "3.3.30"
 # --- Paths ---
 APP_ROOT = os.path.normpath(os.environ.get("TRIM_APPDEST", os.path.join(os.path.dirname(os.path.abspath(__file__)), "..")))
 UI_DIR = os.path.join(APP_ROOT, "ui")
@@ -4602,6 +4602,15 @@ if HAS_AIOHTTP:
             ok_ds, full_dataset = zfs_create_dataset(dataset)
             if not ok_ds:
                 return {"ok": False, "msg": f"rootfs 子卷创建失败: {full_dataset}"}
+
+            # 1b. 根盘配额（可选，与 handle_create 同一套 qgroup）
+            _disk_gb = body.get("disk_size_gb", 0) or 0
+            if _disk_gb > 0:
+                qok, qerr = btrfs_qgroup_limit(full_dataset, int(_disk_gb * 1024 ** 3))
+                if qok:
+                    logger.info("rootfs qgroup 配额已设置: %s GB", _disk_gb)
+                else:
+                    logger.warning("rootfs qgroup 配额设置失败: %s", qerr)
 
             # 2. 子卷路径本身就是 rootfs（dir 后端直接写入）
             zfs_mount = full_dataset

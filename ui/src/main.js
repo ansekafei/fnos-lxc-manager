@@ -130,6 +130,10 @@ document.addEventListener('click', async (e) => {
   const dtAct = e.target.closest('[data-dt-act]');
   if (dtAct) return ddata.onAction(dtAct.dataset.dtAct, dtAct);
 
+  /* 创建页分段切换 */
+  const crTab = e.target.closest('[data-cr-tab]');
+  if (crTab) return create.onTab(crTab.dataset.crTab);
+
   /* 创建页动作 */
   const crAct = e.target.closest('[data-cr-act]');
   if (crAct) return create.onAction(crAct.dataset.crAct);
