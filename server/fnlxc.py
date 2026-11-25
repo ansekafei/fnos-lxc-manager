@@ -43,6 +43,11 @@ LOG_MAX_BYTES = 10 * 1024 * 1024   # 单文件最大 10MB
 LOG_BACKUP_COUNT = 5               # 保留 5 个轮转备份
 
 # 不再用 basicConfig，避免 root logger 重复输出
+try:
+    import guestnet   # 容器内 eth0 的静态地址 / DHCP 切换
+except Exception:      # 打包漏文件时降级，不让整个后端起不来
+    guestnet = None
+
 _logger = logging.getLogger("fnlxc")
 _logger.setLevel(logging.INFO)
 _formatter = logging.Formatter("%(asctime)s [%(levelname)s] %(message)s")
@@ -73,7 +78,7 @@ logger.info("HOME=%s", os.environ.get("HOME", "NOT SET"))
 
 # 版本号：必须与仓库根目录 manifest 的 version 保持一致（构建包版本取 manifest，
 # /api/health 与 /api/version 返回此值），升级时两处一起改。
-APP_VERSION = "3.3.27"
+APP_VERSION = "3.3.29"
 # --- Paths ---
 APP_ROOT = os.path.normpath(os.environ.get("TRIM_APPDEST", os.path.join(os.path.dirname(os.path.abspath(__file__)), "..")))
 UI_DIR = os.path.join(APP_ROOT, "ui")
@@ -3514,6 +3519,118 @@ if HAS_AIOHTTP:
         if not ok: return web.json_response({"success": False, "error": err}, status=500)
         return web.json_response({"success": True, "message": "排序已更新"})
 
+    async def handle_set_ip(request):
+        """PUT /api/lxc/{name}/ip — 设置/清除 eth0 静态 IPv4 地址
+
+        body: {"address": "192.168.1.50" | "192.168.1.50/24", "gateway": "192.168.1.1"}
+        address 为空 = 改回 DHCP（撤销容器内所有带标记的改动）。
+        为什么不能只写 lxc.net.0.ipv4.address：那个键只在启动瞬间由 LXC 配上，
+        容器自己的 DHCP 客户端随后会把地址抢回去，所以还要改容器内的网络配置。
+        """
+        name = request.match_info["name"]
+        if not validate_container_name(name):
+            return web.json_response({"success": False, "error": "容器名称格式无效"}, status=400)
+        try:
+            body = await request.json()
+        except Exception:
+            return web.json_response({"success": False, "error": "无效的请求数据"}, status=400)
+
+        address = (body.get("address") or "").strip()
+        gateway = (body.get("gateway") or "").strip()
+        iface = None
+        if address:
+            try:
+                iface = ipaddress.IPv4Interface(address if "/" in address else address + "/24")
+            except ValueError as e:
+                return web.json_response({"success": False, "error": f"IPv4 地址无效：{e}"}, status=400)
+            if iface.ip.is_loopback or iface.ip.is_multicast or iface.ip.is_unspecified:
+                return web.json_response({"success": False, "error": "不能用环回 / 组播 / 0.0.0.0 地址"}, status=400)
+            if iface.ip in (iface.network.network_address, iface.network.broadcast_address):
+                return web.json_response({"success": False, "error": "地址不能是网段地址或广播地址"}, status=400)
+        if gateway:
+            try:
+                ipaddress.IPv4Address(gateway)
+            except ValueError:
+                return web.json_response({"success": False, "error": f"网关不是合法 IPv4：{gateway}"}, status=400)
+
+        if guestnet is None:
+            return web.json_response({"success": False, "error": "guestnet 模块缺失，无法修改容器内网络配置"}, status=500)
+
+        config_path = get_container_config_path(name)
+        try:
+            with open(config_path) as f:
+                lines = f.readlines()
+        except FileNotFoundError:
+            return config_unavailable_response(config_path)
+        except Exception as e:
+            return web.json_response({"success": False, "error": f"读取配置失败: {e}"}, status=500)
+
+        # 没给网关就沿用 config 里现有的那个（用户通常在「网关与 DNS」面板改）
+        if iface is not None and not gateway:
+            for line in lines:
+                _l = line.strip()
+                if _l.startswith("lxc.net.0.ipv4.gateway"):
+                    gateway = _l.split("=", 1)[1].strip() if "=" in _l else ""
+                    break
+
+        keys = {"lxc.net.0.ipv4.address": None, "lxc.net.0.ipv4.gateway": None}
+        if iface is not None:
+            keys["lxc.net.0.ipv4.address"] = str(iface)
+            if gateway:
+                keys["lxc.net.0.ipv4.gateway"] = gateway
+
+        new_lines, touched = [], set()
+        for line in lines:
+            stripped = line.strip()
+            matched = False
+            for key in keys:
+                if stripped.startswith(key):
+                    if keys[key]:
+                        new_lines.append(f"{key} = {keys[key]}\n")
+                    touched.add(key)
+                    matched = True
+                    break
+            if not matched:
+                new_lines.append(line)
+        for key, val in keys.items():
+            if key not in touched and val:
+                new_lines.append(f"{key} = {val}\n")
+        try:
+            with open(config_path, "w") as f:
+                f.writelines(new_lines)
+        except Exception as e:
+            return web.json_response({"success": False, "error": f"写入配置失败: {e}"}, status=500)
+
+        # 改容器内 eth0：关 DHCP 配静态（或全部撤销回 DHCP）
+        rootfs = get_container_rootfs(name)
+        try:
+            result = guestnet.apply_static(rootfs, str(iface), gateway) if iface is not None \
+                else guestnet.apply_dhcp(rootfs)
+            logger.info("容器 %s 网络后端=%s 改动文件=%s", name, result.get("backend"), result.get("files"))
+        except Exception as e:
+            logger.warning("容器 %s 内网络配置改写失败: %s", name, e, exc_info=True)
+            return web.json_response(
+                {"success": False, "error": f"容器内网络配置改写失败：{e}（容器 config 已写入）"},
+                status=500)
+
+        backend = {"ifupdown": "ifupdown", "networkd": "systemd-networkd",
+                   "netplan": "netplan", "networkmanager": "NetworkManager",
+                   "none": "ifupdown"}.get(result.get("backend"), result.get("backend"))
+        what = "静态地址已设置" if iface is not None else "已改回 DHCP"
+
+        try:
+            ri = await async_run_lxc("info", ["-n", name], timeout=10)
+            if ri["code"] == 0 and "RUNNING" in ri["stdout"]:
+                await async_run_lxc("stop", ["-n", name, "-k", "-W", "-t", "10"], timeout=30)
+                await asyncio.sleep(2)
+                await async_run_lxc("start", ["-d", "-n", name], timeout=30)
+                return web.json_response({"success": True,
+                                          "message": f"{what}（{backend}），容器已重启"})
+        except Exception:
+            pass
+        return web.json_response({"success": True,
+                                  "message": f"{what}（{backend}），下次启动生效"})
+
     async def handle_set_limits(request):
         """PUT /api/lxc/{name}/limits — 设置容器 CPU/内存限制"""
         name = request.match_info["name"]
@@ -4627,12 +4744,21 @@ if HAS_AIOHTTP:
                     except Exception as _e:
                         logger.warning("写入容器 DNS 失败: %s", _e)
 
-                # 4d. 静态地址落盘到容器内 ifupdown 配置
+                # 4d. 静态地址落盘到容器内网络配置
                 # lxc.net.0.ipv4.address 只在启动瞬间生效，模板自带的 DHCP 客户端
-                # （Alpine 的 interfaces.d/eth0、Debian 的 interfaces）会把它冲掉，
-                # 所以这里把静态配置写进容器内，保证重启后仍是固定地址。
+                # 会把它冲掉。这里交给 guestnet 按容器实际用的后端（ifupdown /
+                # systemd-networkd / netplan / NetworkManager）关掉 eth0 的 DHCP 再写
+                # 静态地址，全部改动带标记，改回 DHCP 时只撤销自己改过的行。
                 _v4_static = (body.get("ipv4_address") or "").strip()
-                if _v4_static:
+                if _v4_static and guestnet is not None:
+                    try:
+                        _r = guestnet.apply_static(
+                            zfs_mount, _v4_static, (body.get("ipv4_gateway") or "").strip())
+                        logger.info("容器 %s 静态地址已写入（%s）：%s",
+                                    name, _r.get("backend"), _r.get("files"))
+                    except Exception as _e:
+                        logger.warning("写入容器静态网络配置失败: %s", _e)
+                elif _v4_static:
                     try:
                         _addr, _, _plen = _v4_static.partition("/")
                         _plen = int(_plen) if _plen else 24
@@ -5147,6 +5273,7 @@ if HAS_AIOHTTP:
             ("GET", "/api/lxc/{name}/info", handle_info),
             ("GET", "/api/lxc/{name}/config", handle_config_get),
             ("PUT", "/api/lxc/{name}/config", handle_config_update),
+            ("PUT", "/api/lxc/{name}/ip", handle_set_ip),
             ("GET", "/api/lxc/{name}/snapshots", handle_snapshots),
             ("POST", "/api/lxc/{name}/snapshot", handle_create_snapshot),
             ("DELETE", "/api/lxc/{name}/snapshot/{snap}", handle_delete_snapshot),

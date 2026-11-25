@@ -1,7 +1,7 @@
 /* containers.js —— 容器列表 / 信息 / 生命周期动作 / exec / 删除
  * 对应 docs/API.md §2.1、§2.2，函数与路由一一对应。
  */
-import { lxc, get, post, del, terminalWs } from './client.js';
+import { lxc, get, post, put, del, terminalWs } from './client.js';
 
 /** GET /api/lxc/list —— 全部容器 */
 export const listContainers = () => get(lxc('/list'));
@@ -18,6 +18,10 @@ export const containerAction = (name, action) => post(lxc(`/${encodeURIComponent
 /** POST /api/lxc/{name}/exec —— 容器内执行命令，返回 {stdout,stderr,code} */
 export const execCommand = (name, cmd) =>
   post(lxc(`/${encodeURIComponent(name)}/exec`), { cmd });
+
+/** PUT /api/lxc/{name}/ip —— 设置静态 IPv4（address 留空 = 改回 DHCP） */
+export const setStaticIp = (name, address, gateway = '') =>
+  put(lxc(`/${encodeURIComponent(name)}/ip`), { address, gateway });
 
 /** DELETE /api/lxc/{name}?force=true —— 删除容器 */
 export const deleteContainer = (name, { force = false } = {}) =>

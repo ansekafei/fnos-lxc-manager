@@ -3,6 +3,7 @@
 import { getState, toastErr, toastOk } from '../../state.js';
 import { listInterfaces } from '../../api/system.js';
 import { getConfig, updateConfig } from '../../api/config.js';
+import { setStaticIp } from '../../api/containers.js';
 import { ApiError } from '../../api/client.js';
 import { field, input, select } from '../../components/field.js';
 
@@ -12,6 +13,7 @@ export function render(body) {
 
   body.innerHTML = `
     <div class="panel"><div class="ph">网卡与地址<span>运行期实时</span></div><div class="pb" id="nw-list"></div></div>
+    <div class="panel"><div class="ph">IPv4 地址<span>静态地址会关掉容器内 eth0 的 DHCP</span></div><div class="pb" id="nw-ip"></div></div>
     <div class="grid2">
       <div class="panel"><div class="ph">网络模式<span>保存后容器自动重启生效</span></div><div class="pb" id="nw-mode"></div></div>
       <div class="panel"><div class="ph">网关与 DNS<span>保存后容器自动重启生效</span></div><div class="pb" id="nw-route"></div></div>
@@ -77,9 +79,11 @@ function errBox(msg) {
 async function load(body, name) {
   const modeEl = body.querySelector('#nw-mode');
   const routeEl = body.querySelector('#nw-route');
+  const ipEl = body.querySelector('#nw-ip');
   if (!modeEl || !routeEl) return;
   modeEl.innerHTML = '<div class="loading">加载中…</div>';
   routeEl.innerHTML = '<div class="loading">加载中…</div>';
+  if (ipEl) ipEl.innerHTML = '<div class="loading">加载中…</div>';
 
   let lines, nics;
   try {
@@ -90,12 +94,14 @@ async function load(body, name) {
     const msg = e instanceof ApiError && e.locked ? '⚠️ ' + e.message : e.message;
     modeEl.innerHTML = ''; modeEl.appendChild(errBox(msg));
     routeEl.innerHTML = ''; routeEl.appendChild(errBox(msg));
+    if (ipEl) { ipEl.innerHTML = ''; ipEl.appendChild(errBox(msg)); }
     return;
   }
   if (getState().selected !== name || !modeEl.isConnected) return;
 
   renderMode(modeEl, lines, nics);
   renderRoute(routeEl, lines);
+  if (ipEl) renderIp(ipEl, lines);
 }
 
 function renderMode(el, lines, nics) {
@@ -155,6 +161,30 @@ function renderRoute(el, lines) {
   el._route = { i4, i6, iD };
 }
 
+function renderIp(el, lines) {
+  const cur = cfgVal(lines, 'lxc.net.0.ipv4.address');
+  el.innerHTML = '';
+  const ipIn = input({ value: cur, placeholder: '如 192.168.1.50 或 192.168.1.50/24' });
+  const save = document.createElement('button');
+  save.className = 'btn primary'; save.textContent = '应用';
+  save.dataset.nwAct = 'save-ip';
+  const back = document.createElement('button');
+  back.className = 'btn'; back.textContent = '改回 DHCP';
+  back.dataset.nwAct = 'ip-dhcp';
+  const row = document.createElement('div');
+  row.className = 'btns';
+  row.style.marginLeft = '0';
+  row.append(save, back);
+
+  el.append(
+    field('静态地址', ipIn, {
+      hint: '网关取下方「网关与 DNS」里的 IPv4 网关；点「改回 DHCP」可撤销全部改动',
+    }),
+    row,
+  );
+  el._ip = { ipIn };
+}
+
 /* main.js 委托转发 */
 export async function onAction(act, btn) {
   const { selected } = getState();
@@ -183,6 +213,26 @@ export async function onAction(act, btn) {
       toastOk('网络模式已更新');
     } catch (e) {
       toastErr(e instanceof ApiError && e.locked ? e.message : `保存失败：${e.message}`);
+    }
+    return;
+  }
+
+  if (act === 'save-ip' || act === 'ip-dhcp') {
+    if (!el._ip) return;
+    const address = act === 'ip-dhcp' ? '' : el._ip.ipIn.value.trim();
+    if (act === 'save-ip' && !address) {
+      toastErr('请填地址；要改回 DHCP 请点「改回 DHCP」');
+      return;
+    }
+    if (btn) btn.disabled = true;
+    try {
+      const r = await setStaticIp(selected, address);
+      toastOk(r?.message || (address ? '静态地址已设置' : '已改回 DHCP'));
+      if (!address) el._ip.ipIn.value = '';
+    } catch (e) {
+      toastErr(e instanceof ApiError && e.locked ? e.message : `保存失败：${e.message}`);
+    } finally {
+      if (btn) btn.disabled = false;
     }
     return;
   }
