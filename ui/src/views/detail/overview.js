@@ -46,8 +46,10 @@ export async function load() {
 function stopPoll() { if (pollTimer) { clearInterval(pollTimer); pollTimer = null; } }
 
 async function refreshInfo() {
-  const { selected } = getState();
+  const { selected, detailTab } = getState();
   if (!selected) return;
+  // 只在概览 tab 可见时采样：用户在看设置/网络/数据页时不做无谓的接口轮询
+  if (detailTab !== 'overview') return;
   try {
     const info = await getContainerInfo(selected);
     if (getState().selected !== selected) return;

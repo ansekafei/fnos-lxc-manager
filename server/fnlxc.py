@@ -5,6 +5,7 @@ FnLxc — LXC 容器管理后端（完整版 v2）
 监听 fnOS 网关代理的 Unix Socket，提供 REST API
 """
 import asyncio
+import concurrent.futures
 import datetime
 import glob
 import ipaddress
@@ -17,6 +18,7 @@ import re
 import shlex
 import shutil
 import signal
+import stat
 import struct
 import subprocess
 import termios
@@ -71,7 +73,7 @@ logger.info("HOME=%s", os.environ.get("HOME", "NOT SET"))
 
 # 版本号：必须与仓库根目录 manifest 的 version 保持一致（构建包版本取 manifest，
 # /api/health 与 /api/version 返回此值），升级时两处一起改。
-APP_VERSION = "3.3.22"
+APP_VERSION = "3.3.25"
 # --- Paths ---
 APP_ROOT = os.path.normpath(os.environ.get("TRIM_APPDEST", os.path.join(os.path.dirname(os.path.abspath(__file__)), "..")))
 UI_DIR = os.path.join(APP_ROOT, "ui")
@@ -1091,12 +1093,15 @@ async def async_run_lxc(bin_key, args, timeout=30):
     return await loop.run_in_executor(None, run_lxc, bin_key, args, timeout)
 
 async def async_list_containers():
-    """异步版 list_containers，内部所有 run_lxc 调用走 async_run_lxc"""
+    """异步版 list_containers：lxc-ls 拿名单，再并发取每个容器的摘要
+
+    每个容器的 get_container_info 走轻量模式（不进容器补 IP、不等 du），
+    并且并发执行 —— 容器多了也不会像以前那样一个接一个串行等。
+    """
     result = await async_run_lxc("ls", ["--fancy"])
     if result["code"] != 0:
         return []
 
-    containers = []
     lines = result["stdout"].strip().split("\n")
     if len(lines) < 2:
         return []
@@ -1105,6 +1110,7 @@ async def async_list_containers():
     if len(lines) > 2 and lines[1].strip().startswith("-"):
         data_start = 2
 
+    rows = []
     for line in lines[data_start:]:
         if not line.strip():
             continue
@@ -1115,9 +1121,21 @@ async def async_list_containers():
         # 过滤快照容器（命名规则: {容器名}-snap-{自定义名称或时间戳}）
         if '-snap-' in name:
             continue
-        state = parts[1].lower() if len(parts) > 1 else "unknown"
-        meta, _ = read_metadata(name)
-        info, _ = await async_get_container_info(name)
+        rows.append((name, parts[1].lower() if len(parts) > 1 else "unknown"))
+
+    if not rows:
+        return []
+
+    metas = [read_metadata(name)[0] for name, _ in rows]
+    infos = await asyncio.gather(
+        *(async_get_container_info(name, allow_ip_attach=False) for name, _ in rows)
+    )
+
+    containers = []
+    for (name, state), meta, (info, _err) in zip(rows, metas, infos):
+        # 容器可能在 lxc-ls 与 lxc-info 之间被停掉或删掉，别让整个列表跟着 500
+        if not isinstance(info, dict):
+            info = {}
         containers.append({
             "name": name, "state": state,
             "ips": info.get("ip", []),
@@ -1149,10 +1167,11 @@ async def async_list_containers():
     containers.sort(key=lambda c: (c.get("container_order", 0) or 0, c["name"]))
     return containers
 
-async def async_get_container_info(name):
+
+async def async_get_container_info(name, allow_ip_attach=True):
     """异步版 get_container_info — 委托至同步版"""
     loop = asyncio.get_event_loop()
-    return await loop.run_in_executor(None, get_container_info, name)
+    return await loop.run_in_executor(None, get_container_info, name, allow_ip_attach)
 
 def parse_int(text, default=0):
     try: return int(text)
@@ -1459,8 +1478,8 @@ def list_containers():
         # Read metadata from config
         meta, _ = read_metadata(name)
 
-        # Get detailed info
-        info, _ = get_container_info(name)
+        # 列表用轻量路径：不进容器补查 IP（lxc-info 通常已带 IP）
+        info, _ = get_container_info(name, allow_ip_attach=False)
 
         containers.append({
             "name": name,
@@ -1626,8 +1645,131 @@ def parse_mem_limit(raw):
     return val if 0 < val < (1 << 62) else 0
 
 
-def get_container_info(name):
-    """获取容器详细状态"""
+def read_rootfs_os(rootfs):
+    """直接从宿主读 rootfs/etc/os-release —— 容器停着也能读到系统版本
+
+    不走 lxc-attach：省掉一次进容器的子进程（每个容器几百毫秒），
+    而且停止态本来也 attach 不进去，原先只能显示空。
+    用 commonpath 挡住 os-release 指向容器外的符号链接。
+    """
+    if not rootfs:
+        return "", ""
+    rootfs = os.path.realpath(rootfs)
+    path = os.path.join(rootfs, "etc", "os-release")
+    try:
+        real = os.path.realpath(path)
+        if os.path.commonpath((rootfs, real)) != rootfs:
+            return "", ""
+        fd = os.open(real, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK)
+        with os.fdopen(fd, encoding="utf-8", errors="replace") as f:
+            if not stat.S_ISREG(os.fstat(f.fileno()).st_mode):
+                return "", ""
+            text = f.read(8192)
+    except (OSError, ValueError):
+        return "", ""
+    values = {}
+    for line in text.splitlines():
+        if "=" in line and not line.lstrip().startswith("#"):
+            k, v = line.split("=", 1)
+            values[k.strip()] = v.strip().strip('"').strip("'")
+    return values.get("PRETTY_NAME", values.get("NAME", "")), values.get("VERSION_ID", "")
+
+
+def read_container_uptime(pid):
+    """容器运行时长：/proc/{pid}/stat 的启动时刻 + /proc/uptime，不进容器"""
+    if pid <= 0:
+        return ""
+    try:
+        with open(f"/proc/{pid}/stat") as f:
+            start_ticks = int(f.read().rsplit(")", 1)[1].split()[19])
+        with open("/proc/uptime") as f:
+            seconds = max(0, int(float(f.read().split()[0]) - start_ticks / os.sysconf("SC_CLK_TCK")))
+    except (OSError, ValueError, IndexError):
+        return ""
+    days, seconds = divmod(seconds, 86400)
+    hours, seconds = divmod(seconds, 3600)
+    return (f"{days}天" if days else "") + f"{hours}时{seconds // 60}分"
+
+
+# ── rootfs 磁盘占用 + qgroup 配额：后台单线程刷新，列表接口不阻塞 ──
+# du 扫一遍 rootfs 要几百毫秒到几秒，容器一多列表接口就被拖住。
+# 这里永远先返回上次结果，测量丢给后台线程；没测过就先返回 0。
+_DISK_CACHE_TTL = 60.0
+_DISK_RETRY_TTL = 5.0
+_disk_cache = {}       # rootfs -> (identity, expires_at, (used, limit))
+_disk_pending = set()
+_disk_lock = threading.Lock()
+_disk_workers = concurrent.futures.ThreadPoolExecutor(max_workers=1, thread_name_prefix="lxc-disk")
+
+
+def _measure_disk_usage(rootfs, identity, previous):
+    used, limit = previous
+    ttl = _DISK_RETRY_TTL
+    try:
+        # 只统计 rootfs 自身，不跨文件系统，跳过容器运行时目录
+        excludes = ["--exclude=" + os.path.join(glob.escape(rootfs), d)
+                    for d in ("proc", "sys", "dev", "run")]
+        r = subprocess.run(["du", "-sbx", *excludes, "--", rootfs],
+                           capture_output=True, text=True, timeout=20)
+        if r.returncode == 0 and r.stdout:
+            used = int(r.stdout.split()[0])
+        try:
+            max_ref, _ref = btrfs_qgroup_show(rootfs)
+            limit = max_ref          # 0 = 无限制
+        except Exception:
+            pass
+        ttl = _DISK_CACHE_TTL
+    except (OSError, ValueError, subprocess.TimeoutExpired):
+        pass
+    finally:
+        with _disk_lock:
+            _disk_pending.discard(rootfs)
+            _disk_cache.pop(rootfs, None)
+            _disk_cache[rootfs] = (identity, time.monotonic() + ttl, (used, limit))
+            if len(_disk_cache) > 256:
+                del _disk_cache[next(iter(_disk_cache))]
+
+
+def cached_disk_usage(rootfs, wait=False):
+    """返回 (已用字节, 配额字节)，配额 0 表示无限制。
+
+    wait=False（列表接口）：只拿缓存，没有就后台量，接口立刻返回 —— 首次可能返回 0。
+    wait=True（单容器详情）：缓存空时当场量一次，用户点开的那个容器数字必须准。
+    """
+    if not rootfs:
+        return 0, 0
+    rootfs = os.path.abspath(rootfs)
+    try:
+        st = os.stat(rootfs)
+        if not stat.S_ISDIR(st.st_mode):
+            return 0, 0
+    except OSError:
+        return 0, 0
+    identity = (st.st_dev, st.st_ino)     # 子卷被重建后 inode 变，自动作废旧缓存
+    with _disk_lock:
+        got_identity, expires, value = _disk_cache.get(rootfs, (None, 0, (0, 0)))
+        if got_identity != identity:
+            expires, value = 0, (0, 0)
+        fresh = expires > time.monotonic()
+        can_queue = rootfs not in _disk_pending and len(_disk_pending) < 16
+        if not fresh and can_queue:
+            _disk_pending.add(rootfs)
+            _disk_workers.submit(_measure_disk_usage, rootfs, identity, value)
+    if fresh or not wait:
+        return value
+    # 详情路径：当场量这一个，别排在后台队列后面等
+    _measure_disk_usage(rootfs, identity, value)
+    with _disk_lock:
+        got_identity, _expires, value = _disk_cache.get(rootfs, (None, 0, value))
+    return value if got_identity == identity else (0, 0)
+
+
+def get_container_info(name, allow_ip_attach=True):
+    """获取容器详细状态
+
+    allow_ip_attach=False 用于列表接口：lxc-info 没给出 IP 时不再进容器补查，
+    否则每个容器都要多跑一次 lxc-attach，容器一多列表就慢成幻灯片。
+    """
     result = run_lxc("info", ["-n", name])
     if result["code"] != 0:
         return None, result["stderr"]
@@ -1710,40 +1852,43 @@ def get_container_info(name):
                     break
     except: pass
 
-    # Fallback: get IPs via lxc-attach + ip addr (with timeout to avoid hanging)
+    # IP 兜底：先读 dnsmasq 租约（纯文件读，零成本），实在没有再考虑进容器问
     if info["state"] == "running" and not info["ip"]:
-        try:
-            r = run_lxc("attach", ["-n", name, "--", "ip", "addr", "show"], 5)
-            if r["code"] == 0:
-                for line in r["stdout"].split("\n"):
-                    m = re.search(r"inet\s+(\d+\.\d+\.\d+\.\d+)", line)
-                    if m:
-                        info["ip"].append(m.group(1))
-                    m6 = re.search(r"inet6\s+([0-9a-f:]+)", line)
-                    if m6:
-                        addr = m6.group(1)
-                        if addr not in info["ipv6"]:
-                            info["ipv6"].append(addr)
-        except Exception:
-            pass
-        # Also try via dnsmasq leases file (multiple possible paths)
-        if not info["ip"]:
-            for leases_path in (
-                "/var/lib/misc/dnsmasq.lxcbr0.leases",
-                "/var/lib/dnsmasq/dnsmasq.leases",
-                "/run/dnsmasq/dnsmasq.leases",
-                "/var/lib/dhcp/dhclient.leases",
-            ):
-                try:
-                    with open(leases_path) as f:
-                        for line in f:
-                            parts = line.split()
-                            # dnsmasq format: type timestamp IP MAC hostname client-id
-                            if len(parts) >= 4 and parts[3] == name:
-                                info["ip"].append(parts[2])
-                                break
-                except Exception:
-                    pass
+        for leases_path in (
+            "/var/lib/misc/dnsmasq.lxcbr0.leases",
+            "/var/lib/dnsmasq/dnsmasq.leases",
+            "/run/dnsmasq/dnsmasq.leases",
+            "/var/lib/dhcp/dhclient.leases",
+        ):
+            try:
+                with open(leases_path) as f:
+                    for line in f:
+                        parts = line.split()
+                        # dnsmasq format: type timestamp IP MAC hostname client-id
+                        if len(parts) >= 4 and parts[3] == name:
+                            info["ip"].append(parts[2])
+                            break
+            except Exception:
+                pass
+            if info["ip"]:
+                break
+        # 仍然没有才进容器查。列表接口传 allow_ip_attach=False 跳过这一步：
+        # 每个容器一次 lxc-attach（还带 5 秒超时），容器一多列表就被拖死。
+        if not info["ip"] and allow_ip_attach:
+            try:
+                r = run_lxc("attach", ["-n", name, "--", "ip", "addr", "show"], 5)
+                if r["code"] == 0:
+                    for line in r["stdout"].split("\n"):
+                        m = re.search(r"inet\s+(\d+\.\d+\.\d+\.\d+)", line)
+                        if m:
+                            info["ip"].append(m.group(1))
+                        m6 = re.search(r"inet6\s+([0-9a-f:]+)", line)
+                        if m6:
+                            addr = m6.group(1)
+                            if addr not in info["ipv6"]:
+                                info["ipv6"].append(addr)
+            except Exception:
+                pass
 
     # Separate IPv4 and IPv6
     for addr in info["ip"]:
@@ -1754,85 +1899,23 @@ def get_container_info(name):
             if addr not in info["ipv4"]:
                 info["ipv4"].append(addr)
 
-    # ── OS / Release / Arch / Uptime（需要从容器内部读取）────────────
-    # 容器运行时：用 lxc-attach；停止时：直接从 rootfs 读 /etc/os-release
+    # ── OS / Release / Arch / Uptime ────────────────────────────────
+    # 以前这里对每个运行中的容器跑 3 次 lxc-attach（os-release / uname / uptime），
+    # 列表接口一次要串行几百毫秒。现在全部在宿主侧解决：
+    #   OS      → 直接读 rootfs/etc/os-release（容器停着也能读到，比 attach 更全）
+    #   uptime  → /proc/{pid}/stat 的启动时刻 + /proc/uptime
+    #   arch    → 宿主架构（容器与宿主同为 x86_64/aarch64，不跨架构运行）
     rootfs = get_container_rootfs(name)
-    _os, _release, _arch, _uptime = "", "", "", ""
-
-    def _read_os_release(rfs):
-        os_info = {}
-        path = os.path.join(rfs, "etc", "os-release")
-        if os.path.isfile(path):
-            try:
-                with open(path) as f:
-                    for line in f:
-                        line = line.strip()
-                        if "=" in line:
-                            k, v = line.split("=", 1)
-                            v = v.strip('"').strip("'")
-                            os_info[k] = v
-            except Exception:
-                pass
-        return os_info
-
-    if info["state"] == "running":
-        # 运行时：用 lxc-attach（带 5 秒超时避免挂起）
-        for cmd, key, selector in [
-            (["cat", "/etc/os-release"], "os_release", ["PRETTY_NAME", "NAME"]),
-            (["uname", "-m"], "arch", None),
-            (["cat", "/proc/uptime"], "uptime", None),
-        ]:
-            try:
-                r = run_lxc("attach", ["-n", name, "--"] + cmd, 5)
-                if r["code"] == 0:
-                    output = r["stdout"].strip()
-                    if key == "os_release":
-                        for sel in selector:
-                            if sel in output:
-                                _os = output.split(sel)[1].split("=")[1].strip('"').strip("'") if "=" in output else output
-                                break
-                        # 提取 NAME=
-                        for line in output.split("\n"):
-                            if line.startswith("PRETTY_NAME="):
-                                _os = line.split("=", 1)[1].strip('"').strip("'")
-                                break
-                            elif line.startswith("NAME=") and not _os:
-                                _os = line.split("=", 1)[1].strip('"').strip("'")
-                    elif key == "arch":
-                        _arch = output
-                    elif key == "uptime":
-                        # uptime = "1234.5 5678.9" → 取第一个数（系统运行秒数）
-                        first = output.split()[0] if output else "0"
-                        try:
-                            secs = float(first)
-                            days = int(secs // 86400)
-                            hours = int((secs % 86400) // 3600)
-                            mins = int((secs % 3600) // 60)
-                            _uptime = f"{days}天{hours}时{mins}分" if days > 0 else f"{hours}时{mins}分"
-                        except Exception:
-                            _uptime = output
-            except Exception:
-                pass
-    else:
-        # 停止时：从 rootfs 直接读
-        if rootfs and os.path.isdir(rootfs):
-            os_info = _read_os_release(rootfs)
-            _os = os_info.get("PRETTY_NAME", os_info.get("NAME", ""))
-            try:
-                uname_path = os.path.join(rootfs, "bin", "uname")
-                if os.path.exists(uname_path):
-                    r = subprocess.run([uname_path, "-m"], capture_output=True, text=True, timeout=3)
-                    if r.returncode == 0:
-                        _arch = r.stdout.strip()
-            except Exception:
-                pass
-
+    _os, _ = read_rootfs_os(rootfs)
+    # 只回填 os（PRETTY_NAME 已经带了版本号，再塞 release 前端会显示成
+    # "Alpine Linux v3.22 3.22.2" 这种重复）
     if _os:
         info["os"] = _os
-    if _arch:
-        info["arch"] = _arch
-    if _uptime:
-        info["uptime"] = _uptime
+    info["arch"] = os.uname().machine
+    if info["state"] == "running" and info.get("pid"):
+        _uptime = read_container_uptime(info["pid"])
+        if _uptime:
+            info["uptime"] = _uptime
 
     # Count snapshots: btrfs 快照优先，否则用目录扫描（lxc-copy -s 创建的 CoW 快照容器）
     snap_count = 0
@@ -1880,26 +1963,13 @@ def get_container_info(name):
     except Exception:
         info["backups"] = 0
 
-    # Disk usage: du -sb on rootfs (exclude /proc and /sys)
-    rootfs_path = os.path.join(LXC_PATH, name, "rootfs")
+    # Disk usage + qgroup 配额：走缓存，后台线程刷新，接口不等 du
+    rootfs_path = rootfs or os.path.join(LXC_PATH, name, "rootfs")
     if os.path.isdir(rootfs_path):
-        try:
-            du_r = subprocess.run(
-                ["du", "-sb", "--exclude=/proc", "--exclude=/sys", rootfs_path],
-                capture_output=True, text=True, timeout=15
-            )
-            if du_r.returncode == 0:
-                m = re.match(r"(\d+)", du_r.stdout.strip())
-                if m:
-                    info["disk_used"] = int(m.group(1))
-        except Exception:
-            pass
-        # qgroup 配额
-        try:
-            max_ref, ref = btrfs_qgroup_show(rootfs_path)
-            info["disk_limit"] = max_ref  # 0 = 无限制
-        except Exception:
-            pass
+        # 列表接口 allow_ip_attach=False → 不等 du；详情接口就地量准
+        disk_used, disk_limit = cached_disk_usage(rootfs_path, wait=allow_ip_attach)
+        info["disk_used"] = disk_used
+        info["disk_limit"] = disk_limit      # 0 = 无限制
 
     # Network rate: compute delta from previous sample
     now = time.time()
@@ -2407,17 +2477,22 @@ def _after_create(name, network_type="bridge", ipv4=None, gateway=None,
         if os.path.isfile(config_path):
             with open(config_path) as f:
                 lines = f.readlines()
+            # 无特权容器不能套 unconfined：那样 idmap 只挡住 uid，AppArmor 全放开，
+            # 等于把容器里能做的越权动作重新放开。有 idmap 就用 generated 让 LXC
+            # 按容器配置生成 profile；特权容器才需要 unconfined 才能放开设备。
+            _has_idmap = any(l.strip().startswith("lxc.idmap") for l in lines)
+            _want_profile = "generated" if _has_idmap else "unconfined"
             new_lines = []
             apparmor_set = False
             for line in lines:
                 stripped = line.strip()
                 if stripped.startswith("lxc.apparmor.profile"):
-                    new_lines.append("lxc.apparmor.profile = unconfined\n")
+                    new_lines.append(f"lxc.apparmor.profile = {_want_profile}\n")
                     apparmor_set = True
                 else:
                     new_lines.append(line)
             if not apparmor_set:
-                new_lines.append("lxc.apparmor.profile = unconfined\n")
+                new_lines.append(f"lxc.apparmor.profile = {_want_profile}\n")
             with open(config_path, "w") as f:
                 f.writelines(new_lines)
     except Exception as e:
@@ -4468,10 +4543,14 @@ if HAS_AIOHTTP:
                     "lxc.tty.max = 1\n"
                     + (
                         # 无特权容器：uid/gid 映射到宿主 100000 起，AppArmor 收紧，不放开设备
+                        # 用 generated 而不是 lxc-container-default-cgns：
+                        # 旧 cgns 配置会拒绝现代 systemd 的 generator 沙箱挂载（lxc/lxc#4402），
+                        # 新系统模板建出来的容器会卡在启动阶段。generated 由 LXC 按容器配置
+                        # 现场生成 profile，既保留 AppArmor 隔离又不误伤 systemd。
                         f"lxc.idmap = u 0 {_subid} 65536\n"
                         f"lxc.idmap = g 0 {_subid} 65536\n"
                         "lxc.mount.auto = proc:rw sys:ro cgroup:rw\n"
-                        "lxc.apparmor.profile = lxc-container-default-cgns\n"
+                        "lxc.apparmor.profile = generated\n"
                         if _unpriv else
                         # 特权容器：容器内 root = 宿主 root
                         "lxc.apparmor.profile = unconfined\n"
